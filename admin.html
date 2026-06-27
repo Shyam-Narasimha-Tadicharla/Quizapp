@@ -453,7 +453,7 @@
 
     <div class="sidebar-footer">
       <div class="api-url-label">Backend URL</div>
-      <input class="api-url-input" id="api-url" value="http://localhost:5000" oninput="saveApiUrl()" />
+      <input class="api-url-input" id="api-url" value="" placeholder="(same origin)" oninput="saveApiUrl()" />
     </div>
   </aside>
 
@@ -610,14 +610,14 @@
 <script>
 // ─── Config ───────────────────────────────────────────────────────────────────
 function apiBase() {
-  return (document.getElementById('api-url').value || 'http://localhost:5000').replace(/\/$/, '');
+  return (document.getElementById('api-url').value || '').replace(/\/$/, '');
 }
 function saveApiUrl() {
   localStorage.setItem('qe-api-url', document.getElementById('api-url').value);
 }
 (function loadSavedUrl() {
   const saved = localStorage.getItem('qe-api-url');
-  if (saved) document.getElementById('api-url').value = saved;
+  if (saved && !saved.includes('localhost')) document.getElementById('api-url').value = saved;
 })();
 
 // ─── State ────────────────────────────────────────────────────────────────────
