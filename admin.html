@@ -1,0 +1,1022 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>QuizEngine — Admin</title>
+  <style>
+    /* ── Reset & base ── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html { font-size: 15px; }
+    body {
+      font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #0f0f13;
+      color: #e2e2e8;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    button { font-family: inherit; cursor: pointer; }
+    input  { font-family: inherit; }
+    a      { color: inherit; text-decoration: none; }
+
+    /* ── Colour tokens ── */
+    :root {
+      --ink:       #e2e2e8;
+      --ink-dim:   #888899;
+      --ink-faint: #44445a;
+      --surface:   #17171f;
+      --surface-2: #1e1e2a;
+      --surface-3: #252534;
+      --border:    #2a2a3a;
+      --border-hi: #3a3a50;
+      --accent:    #7b6ef6;
+      --accent-hi: #9d92ff;
+      --accent-bg: rgba(123,110,246,.12);
+      --green:     #34d399;
+      --green-bg:  rgba(52,211,153,.1);
+      --red:       #f87171;
+      --red-bg:    rgba(248,113,113,.1);
+      --amber:     #fbbf24;
+    }
+
+    /* ── Layout shell ── */
+    .shell { display: flex; flex: 1; min-height: 100vh; }
+
+    /* ── Sidebar ── */
+    .sidebar {
+      width: 220px;
+      flex-shrink: 0;
+      background: var(--surface);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      padding: 1.5rem 0;
+      position: fixed;
+      top: 0; left: 0; bottom: 0;
+    }
+    .logo {
+      display: flex; align-items: center; gap: 10px;
+      padding: 0 1.25rem 1.5rem;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 1rem;
+    }
+    .logo-mark {
+      width: 30px; height: 30px;
+      background: var(--accent);
+      border-radius: 8px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 15px; font-weight: 700; color: #fff; flex-shrink: 0;
+    }
+    .logo-text { font-size: 14px; font-weight: 600; color: var(--ink); letter-spacing: -.01em; }
+    .logo-sub  { font-size: 11px; color: var(--ink-dim); margin-top: 1px; }
+
+    .nav-item {
+      display: flex; align-items: center; gap: 10px;
+      padding: 9px 1.25rem;
+      font-size: 13.5px; color: var(--ink-dim);
+      border-left: 2px solid transparent;
+      cursor: pointer;
+      transition: color .15s, background .15s, border-color .15s;
+      user-select: none;
+    }
+    .nav-item:hover { color: var(--ink); background: var(--accent-bg); }
+    .nav-item.active { color: var(--ink); border-left-color: var(--accent); background: var(--accent-bg); }
+    .nav-icon { width: 16px; text-align: center; flex-shrink: 0; font-size: 15px; }
+
+    .nav-count {
+      margin-left: auto;
+      background: var(--surface-3);
+      color: var(--ink-dim);
+      font-size: 11px; font-weight: 600;
+      padding: 1px 7px; border-radius: 99px;
+    }
+    .sidebar-footer {
+      margin-top: auto;
+      padding: 1rem 1.25rem 0;
+      border-top: 1px solid var(--border);
+    }
+    .api-url-label { font-size: 11px; color: var(--ink-dim); margin-bottom: 4px; }
+    .api-url-input {
+      width: 100%;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 6px 8px;
+      font-size: 12px;
+      color: var(--ink-dim);
+      outline: none;
+      transition: border-color .15s;
+    }
+    .api-url-input:focus { border-color: var(--accent); color: var(--ink); }
+
+    /* ── Main content ── */
+    .main {
+      margin-left: 220px;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Top bar ── */
+    .topbar {
+      display: flex; align-items: center;
+      padding: 0 2rem;
+      height: 56px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+      flex-shrink: 0;
+      position: sticky; top: 0; z-index: 10;
+    }
+    .topbar-title { font-size: 15px; font-weight: 600; }
+    .topbar-sub   { font-size: 13px; color: var(--ink-dim); margin-left: 10px; }
+    .topbar-actions { margin-left: auto; display: flex; gap: 8px; }
+
+    /* ── Panels ── */
+    .panel { display: none; flex: 1; padding: 2rem; }
+    .panel.active { display: flex; flex-direction: column; gap: 1.5rem; }
+
+    /* ── Buttons ── */
+    .btn {
+      display: inline-flex; align-items: center; gap: 7px;
+      padding: 8px 16px;
+      border-radius: 7px;
+      font-size: 13.5px; font-weight: 500;
+      border: 1px solid var(--border-hi);
+      background: var(--surface-2);
+      color: var(--ink);
+      transition: background .15s, border-color .15s, transform .1s;
+      white-space: nowrap;
+    }
+    .btn:hover  { background: var(--surface-3); border-color: var(--accent); }
+    .btn:active { transform: scale(.98); }
+    .btn-primary {
+      background: var(--accent); border-color: var(--accent); color: #fff;
+    }
+    .btn-primary:hover { background: var(--accent-hi); border-color: var(--accent-hi); }
+    .btn-sm { padding: 5px 11px; font-size: 12.5px; }
+    .btn-ghost { background: transparent; border-color: transparent; color: var(--ink-dim); }
+    .btn-ghost:hover { background: var(--surface-2); border-color: var(--border); color: var(--ink); }
+    .btn:disabled { opacity: .4; cursor: not-allowed; transform: none; }
+
+    /* ── Upload zone ── */
+    .upload-zone {
+      border: 1.5px dashed var(--border-hi);
+      border-radius: 12px;
+      background: var(--surface);
+      padding: 3rem 2rem;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color .2s, background .2s;
+      position: relative;
+    }
+    .upload-zone:hover, .upload-zone.drag-over {
+      border-color: var(--accent);
+      background: var(--accent-bg);
+    }
+    .upload-zone input[type=file] {
+      position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%;
+    }
+    .upload-icon { font-size: 2.5rem; margin-bottom: .75rem; }
+    .upload-headline { font-size: 16px; font-weight: 600; color: var(--ink); margin-bottom: 6px; }
+    .upload-sub { font-size: 13px; color: var(--ink-dim); }
+    .upload-sub strong { color: var(--accent); }
+
+    /* ── Format hint ── */
+    .format-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--accent);
+      border-radius: 0 10px 10px 0;
+      padding: 1rem 1.25rem;
+    }
+    .format-card h4 { font-size: 12px; font-weight: 600; color: var(--ink-dim); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 8px; }
+    .format-card pre { font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 12px; color: var(--ink-dim); line-height: 1.9; }
+    .format-card pre span { color: var(--accent-hi); }
+
+    /* ── File ready state ── */
+    .file-ready {
+      display: none;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1rem 1.25rem;
+      align-items: center; gap: 12px;
+    }
+    .file-ready.show { display: flex; }
+    .file-icon { font-size: 1.75rem; }
+    .file-name { font-size: 14px; font-weight: 500; }
+    .file-meta { font-size: 12px; color: var(--ink-dim); margin-top: 2px; }
+    .file-actions { margin-left: auto; display: flex; gap: 8px; }
+
+    /* ── Preview panel ── */
+    .preview-header {
+      display: flex; align-items: center; gap: 12px;
+      flex-wrap: wrap;
+    }
+    .preview-header h2 { font-size: 16px; font-weight: 600; flex: 1; min-width: 200px; }
+    .title-input {
+      flex: 1; min-width: 180px;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      padding: 7px 12px;
+      font-size: 14px; color: var(--ink);
+      outline: none;
+      transition: border-color .15s;
+    }
+    .title-input:focus { border-color: var(--accent); }
+    .title-input::placeholder { color: var(--ink-faint); }
+
+    .q-list { display: flex; flex-direction: column; gap: 10px; }
+    .q-item {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1rem 1.25rem;
+    }
+    .q-item-num { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-dim); margin-bottom: 6px; }
+    .q-item-text { font-size: 14px; color: var(--ink); margin-bottom: 10px; line-height: 1.5; }
+    .q-opts { display: flex; flex-wrap: wrap; gap: 6px; }
+    .q-opt {
+      font-size: 12.5px; padding: 4px 12px;
+      border-radius: 99px;
+      border: 1px solid var(--border);
+      color: var(--ink-dim);
+      background: var(--surface-2);
+    }
+    .q-opt.correct { border-color: var(--green); color: var(--green); background: var(--green-bg); }
+
+    /* ── Library table ── */
+    .lib-empty {
+      text-align: center; padding: 4rem 1rem;
+      color: var(--ink-dim); font-size: 14px;
+    }
+    .lib-empty-icon { font-size: 2.5rem; margin-bottom: 12px; opacity: .4; }
+
+    .quiz-table { width: 100%; border-collapse: collapse; }
+    .quiz-table th {
+      text-align: left; font-size: 11px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: .06em;
+      color: var(--ink-dim); padding: 8px 14px;
+      border-bottom: 1px solid var(--border);
+    }
+    .quiz-table td {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--border);
+      font-size: 13.5px;
+      vertical-align: middle;
+    }
+    .quiz-table tr:last-child td { border-bottom: none; }
+    .quiz-table tr:hover td { background: var(--surface-2); }
+    .td-title { font-weight: 500; color: var(--ink); }
+    .td-meta  { color: var(--ink-dim); font-size: 12.5px; }
+    .td-badge {
+      display: inline-block;
+      background: var(--accent-bg); color: var(--accent-hi);
+      font-size: 11.5px; font-weight: 600;
+      padding: 2px 10px; border-radius: 99px;
+    }
+    .td-actions { display: flex; gap: 6px; justify-content: flex-end; }
+
+    /* ── Snippet drawer ── */
+    .drawer-overlay {
+      display: none;
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,.55);
+      z-index: 50;
+      animation: fadeIn .2s ease;
+    }
+    .drawer-overlay.open { display: block; }
+    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+    .drawer {
+      position: fixed;
+      top: 0; right: -520px; bottom: 0;
+      width: 480px;
+      background: var(--surface);
+      border-left: 1px solid var(--border);
+      z-index: 51;
+      display: flex; flex-direction: column;
+      transition: right .28s cubic-bezier(.4,0,.2,1);
+      padding: 1.5rem;
+    }
+    .drawer.open { right: 0; }
+
+    .drawer-head {
+      display: flex; align-items: flex-start; gap: 12px;
+      margin-bottom: 1.5rem;
+    }
+    .drawer-title { font-size: 16px; font-weight: 600; }
+    .drawer-sub   { font-size: 13px; color: var(--ink-dim); margin-top: 3px; }
+    .drawer-close {
+      margin-left: auto; font-size: 18px;
+      background: none; border: none; color: var(--ink-dim);
+      cursor: pointer; padding: 2px 6px;
+      line-height: 1; border-radius: 4px;
+      transition: color .15s, background .15s;
+    }
+    .drawer-close:hover { color: var(--ink); background: var(--surface-2); }
+
+    .snippet-label {
+      font-size: 11px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: .06em; color: var(--ink-dim); margin-bottom: 8px;
+    }
+    .snippet-block {
+      background: #0d0d15;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem 1.25rem;
+      font-family: "SF Mono", "Fira Code", Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.8;
+      color: #a9b1d6;
+      white-space: pre;
+      overflow-x: auto;
+      margin-bottom: .75rem;
+      position: relative;
+    }
+    .snippet-block .s-cm  { color: #565f89; }
+    .snippet-block .s-tag { color: #7aa2f7; }
+    .snippet-block .s-attr{ color: #9ece6a; }
+    .snippet-block .s-val { color: #e0af68; }
+    .snippet-copy {
+      position: absolute; top: 8px; right: 8px;
+      font-size: 11px; padding: 3px 10px;
+    }
+
+    .drawer-divider { border: none; border-top: 1px solid var(--border); margin: 1.25rem 0; }
+
+    .steps-label { font-size: 13px; font-weight: 600; margin-bottom: 10px; }
+    .step {
+      display: flex; gap: 12px;
+      margin-bottom: 14px;
+    }
+    .step-num {
+      width: 22px; height: 22px; border-radius: 50%;
+      background: var(--accent-bg); color: var(--accent-hi);
+      font-size: 11px; font-weight: 700;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0; margin-top: 1px;
+    }
+    .step-text { font-size: 13px; color: var(--ink-dim); line-height: 1.6; }
+    .step-text strong { color: var(--ink); }
+
+    /* ── Toast ── */
+    .toast-wrap {
+      position: fixed; bottom: 1.5rem; left: 50%; transform: translateX(-50%);
+      z-index: 100; display: flex; flex-direction: column; align-items: center; gap: 8px;
+      pointer-events: none;
+    }
+    .toast {
+      background: var(--surface-3);
+      border: 1px solid var(--border-hi);
+      border-radius: 8px;
+      padding: 9px 18px;
+      font-size: 13.5px;
+      color: var(--ink);
+      box-shadow: 0 4px 20px rgba(0,0,0,.4);
+      animation: toastIn .22s ease forwards;
+      pointer-events: auto;
+    }
+    .toast.ok   { border-color: var(--green); }
+    .toast.err  { border-color: var(--red); color: var(--red); }
+    @keyframes toastIn {
+      from { opacity: 0; transform: translateY(10px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    /* ── Loading spinner ── */
+    .spinner {
+      width: 18px; height: 18px;
+      border: 2px solid rgba(255,255,255,.2);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin .6s linear infinite;
+      display: inline-block;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Stat row (library header) ── */
+    .stat-row { display: flex; gap: 1rem; flex-wrap: wrap; }
+    .stat-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: .9rem 1.25rem;
+      min-width: 130px;
+    }
+    .stat-val   { font-size: 22px; font-weight: 700; color: var(--ink); }
+    .stat-label { font-size: 12px; color: var(--ink-dim); margin-top: 2px; }
+
+    /* ── Section card ── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    .card-body { padding: 1.25rem 1.5rem; }
+
+    .section-label {
+      font-size: 12px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: .07em; color: var(--ink-dim); margin-bottom: 1rem;
+    }
+
+    /* scrollbar */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border-hi); border-radius: 99px; }
+  </style>
+</head>
+<body>
+
+<div class="shell">
+
+  <!-- ── Sidebar ── -->
+  <aside class="sidebar">
+    <div class="logo">
+      <div class="logo-mark">Q</div>
+      <div>
+        <div class="logo-text">QuizEngine</div>
+        <div class="logo-sub">Admin</div>
+      </div>
+    </div>
+
+    <div class="nav-item" onclick="showPanel('upload')" id="nav-upload">
+      <span class="nav-icon">⬆</span> Upload
+    </div>
+    <div class="nav-item active" onclick="showPanel('library')" id="nav-library">
+      <span class="nav-icon">☰</span> Quiz Library
+      <span class="nav-count" id="lib-count">—</span>
+    </div>
+
+    <div class="sidebar-footer">
+      <div class="api-url-label">Backend URL</div>
+      <input class="api-url-input" id="api-url" value="http://localhost:5000" oninput="saveApiUrl()" />
+    </div>
+  </aside>
+
+  <!-- ── Main ── -->
+  <div class="main">
+
+    <!-- Topbar -->
+    <div class="topbar">
+      <div class="topbar-title" id="topbar-title">Quiz Library</div>
+      <div class="topbar-sub"  id="topbar-sub">All saved quizzes</div>
+      <div class="topbar-actions" id="topbar-actions"></div>
+    </div>
+
+    <!-- ═══════════════════════════════════════
+         PANEL 1 — Upload
+    ═══════════════════════════════════════ -->
+    <div class="panel" id="panel-upload">
+
+      <!-- Drop zone -->
+      <div>
+        <div class="upload-zone" id="upload-zone">
+          <input type="file" id="file-input" accept=".pdf,.txt" />
+          <div class="upload-icon">📄</div>
+          <div class="upload-headline">Drop a file here, or click to browse</div>
+          <div class="upload-sub">Accepts <strong>.pdf</strong> and <strong>.txt</strong> · Max 10 MB</div>
+        </div>
+
+        <!-- File selected state -->
+        <div class="file-ready" id="file-ready">
+          <div class="file-icon" id="file-icon">📄</div>
+          <div>
+            <div class="file-name" id="file-name">—</div>
+            <div class="file-meta" id="file-meta">—</div>
+          </div>
+          <div class="file-actions">
+            <button class="btn btn-ghost btn-sm" onclick="clearFile()">Clear</button>
+            <button class="btn btn-primary btn-sm" id="parse-btn" onclick="parseFile()">
+              Parse questions
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Format reference -->
+      <div class="format-card">
+        <h4>Required format — one blank line between questions</h4>
+        <pre><span>Q:</span> What does CSS stand for?
+<span>A)</span> Computer Style Syntax
+<span>B)</span> Cascading Style Sheets
+<span>C)</span> Creative Styling Service
+<span>D)</span> Colorful Sheet System
+<span>Correct:</span> B
+
+<span>Q:</span> Next question here…</pre>
+      </div>
+
+    </div><!-- /panel-upload -->
+
+    <!-- ═══════════════════════════════════════
+         PANEL 2 — Preview
+    ═══════════════════════════════════════ -->
+    <div class="panel" id="panel-preview">
+
+      <div class="preview-header">
+        <h2 id="preview-count">0 questions found</h2>
+        <input class="title-input" id="quiz-title" placeholder="Quiz title…" />
+        <button class="btn btn-primary" id="save-btn" onclick="saveQuiz()">
+          Save quiz →
+        </button>
+      </div>
+
+      <div style="display:flex;align-items:flex-start;gap:10px;background:rgba(123,110,246,.1);border:1px solid rgba(123,110,246,.3);border-radius:8px;padding:.75rem 1rem;font-size:13px;color:#c4bfff;">
+        <span style="font-size:15px;flex-shrink:0">&#128065;</span>
+        <span><strong style="color:#e2e2e8">Admin review</strong> &mdash; correct answers are highlighted so you can verify the extraction is accurate. End users will see blank selectable options with no answers shown. If everything looks right, set a title and save.</span>
+      </div>
+
+      <div class="section-label">Extracted questions</div>
+      <div class="q-list" id="q-list"></div>
+
+    </div><!-- /panel-preview -->
+
+    <!-- ═══════════════════════════════════════
+         PANEL 3 — Library
+    ═══════════════════════════════════════ -->
+    <div class="panel active" id="panel-library">
+
+      <div class="stat-row">
+        <div class="stat-card">
+          <div class="stat-val" id="stat-total">—</div>
+          <div class="stat-label">Quizzes saved</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-val" id="stat-questions">—</div>
+          <div class="stat-label">Total questions</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div id="lib-body"></div>
+      </div>
+
+    </div><!-- /panel-library -->
+
+  </div><!-- /main -->
+</div><!-- /shell -->
+
+<!-- ── Snippet drawer ── -->
+<div class="drawer-overlay" id="drawer-overlay" onclick="closeDrawer()"></div>
+<div class="drawer" id="drawer">
+  <div class="drawer-head">
+    <div>
+      <div class="drawer-title">Quiz actions</div>
+      <div class="drawer-sub" id="drawer-quiz-name">—</div>
+    </div>
+    <button class="drawer-close" onclick="closeDrawer()">✕</button>
+  </div>
+
+  <!-- Preview button -->
+  <button class="btn btn-primary" id="preview-quiz-btn" onclick="previewQuiz()" style="width:100%;justify-content:center;margin-bottom:1.25rem;padding:11px;">
+    ▶ Open quiz in new tab
+  </button>
+
+  <div style="font-size:12px;color:var(--ink-dim);text-align:center;margin-bottom:1.25rem;position:relative;">
+    <span style="background:var(--surface);padding:0 10px;position:relative;z-index:1;">or embed it in your site</span>
+    <div style="position:absolute;top:50%;left:0;right:0;height:1px;background:var(--border);z-index:0;"></div>
+  </div>
+
+  <div class="snippet-label">1 — Load the engine (once per page)</div>
+  <div class="snippet-block" id="snip-script">
+    <button class="btn btn-sm snippet-copy" onclick="copySnippet('snip-script')">Copy</button>
+  </div>
+
+  <div class="snippet-label">2 — Place the quiz div</div>
+  <div class="snippet-block" id="snip-div">
+    <button class="btn btn-sm snippet-copy" onclick="copySnippet('snip-div')">Copy</button>
+  </div>
+
+  <div class="snippet-label">3 — (Optional) receive results</div>
+  <div class="snippet-block" id="snip-event">
+    <button class="btn btn-sm snippet-copy" onclick="copySnippet('snip-event')">Copy</button>
+  </div>
+
+  <hr class="drawer-divider" />
+
+  <div class="steps-label">How to deploy</div>
+  <div class="step"><div class="step-num">1</div><div class="step-text">Host <strong>quiz-engine.js</strong> on your server or a CDN and update the <strong>src</strong> path in snippet 1.</div></div>
+  <div class="step"><div class="step-num">2</div><div class="step-text">Make sure your backend is reachable and update the <strong>fetch URL</strong> in your page's JS if needed.</div></div>
+  <div class="step"><div class="step-num">3</div><div class="step-text">Paste both snippets into any HTML page. The quiz renders automatically on load.</div></div>
+</div>
+
+<!-- ── Toast container ── -->
+<div class="toast-wrap" id="toast-wrap"></div>
+
+<script>
+// ─── Config ───────────────────────────────────────────────────────────────────
+function apiBase() {
+  return (document.getElementById('api-url').value || 'http://localhost:5000').replace(/\/$/, '');
+}
+function saveApiUrl() {
+  localStorage.setItem('qe-api-url', document.getElementById('api-url').value);
+}
+(function loadSavedUrl() {
+  const saved = localStorage.getItem('qe-api-url');
+  if (saved) document.getElementById('api-url').value = saved;
+})();
+
+// ─── State ────────────────────────────────────────────────────────────────────
+let selectedFile   = null;
+let parsedData     = null;   // { title, questions }
+let currentSnipId  = null;   // quiz id in open drawer
+
+// ─── Navigation ───────────────────────────────────────────────────────────────
+const PANELS = {
+  upload:  { title: 'Upload Questions', sub: 'Parse a PDF or text file into a quiz' },
+  preview: { title: 'Preview & Save',   sub: 'Check the extracted questions before saving' },
+  library: { title: 'Quiz Library',     sub: 'All saved quizzes' },
+};
+
+function showPanel(name) {
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  document.getElementById('panel-' + name).classList.add('active');
+  document.getElementById('nav-' + (name === 'preview' ? 'upload' : name)).classList.add('active');
+  document.getElementById('topbar-title').textContent = PANELS[name].title;
+  document.getElementById('topbar-sub').textContent   = PANELS[name].sub;
+  document.getElementById('topbar-actions').innerHTML = '';
+  if (name === 'library') { loadLibrary(); }
+}
+
+// ─── Upload zone ──────────────────────────────────────────────────────────────
+const zone  = document.getElementById('upload-zone');
+const input = document.getElementById('file-input');
+
+zone.addEventListener('dragover',  e => { e.preventDefault(); zone.classList.add('drag-over'); });
+zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
+zone.addEventListener('drop', e => {
+  e.preventDefault();
+  zone.classList.remove('drag-over');
+  const f = e.dataTransfer.files[0];
+  if (f) setFile(f);
+});
+input.addEventListener('change', () => { if (input.files[0]) setFile(input.files[0]); });
+
+function setFile(file) {
+  const ext = file.name.split('.').pop().toLowerCase();
+  if (!['pdf', 'txt'].includes(ext)) { toast('Only .pdf and .txt files are supported.', 'err'); return; }
+  if (file.size > 10 * 1024 * 1024)  { toast('File exceeds 10 MB limit.', 'err'); return; }
+  selectedFile = file;
+  document.getElementById('file-icon').textContent  = ext === 'pdf' ? '📕' : '📄';
+  document.getElementById('file-name').textContent  = file.name;
+  document.getElementById('file-meta').textContent  = `${(file.size / 1024).toFixed(1)} KB · .${ext.toUpperCase()}`;
+  document.getElementById('upload-zone').style.display = 'none';
+  document.getElementById('file-ready').classList.add('show');
+}
+
+function clearFile() {
+  selectedFile = null;
+  input.value  = '';
+  document.getElementById('upload-zone').style.display = '';
+  document.getElementById('file-ready').classList.remove('show');
+}
+
+// ─── Parse ────────────────────────────────────────────────────────────────────
+async function parseFile() {
+  if (!selectedFile) return;
+  const btn = document.getElementById('parse-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Parsing…';
+
+  const form = new FormData();
+  form.append('file', selectedFile);
+  form.append('title', selectedFile.name.replace(/\.[^.]+$/, ''));
+
+  try {
+    const res  = await fetch(apiBase() + '/api/parse', { method: 'POST', body: form });
+    const data = await res.json();
+
+    if (!res.ok) throw new Error(data.error || 'Parse failed.');
+
+    parsedData = data;
+    buildPreview(data);
+    showPanel('preview');
+    toast(`${data.question_count} question${data.question_count !== 1 ? 's' : ''} extracted.`, 'ok');
+
+  } catch (err) {
+    toast(err.message, 'err');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = 'Parse questions';
+  }
+}
+
+// ─── Preview ──────────────────────────────────────────────────────────────────
+const LETTERS = ['A','B','C','D','E'];
+
+function buildPreview(data) {
+  document.getElementById('preview-count').textContent =
+    `${data.question_count} question${data.question_count !== 1 ? 's' : ''} found`;
+  document.getElementById('quiz-title').value = data.title || '';
+
+  const list = document.getElementById('q-list');
+  list.innerHTML = data.questions.map((q, i) => `
+    <div class="q-item">
+      <div class="q-item-num">Question ${i + 1}</div>
+      <div class="q-item-text">${escHtml(q.q)}</div>
+      <div class="q-opts">
+        ${q.opts.map((o, j) => `
+          <span class="q-opt${j === q.correct ? ' correct' : ''}">
+            ${LETTERS[j]}) ${escHtml(o)}
+          </span>
+        `).join('')}
+      </div>
+    </div>
+  `).join('');
+}
+
+// ─── Save ─────────────────────────────────────────────────────────────────────
+async function saveQuiz() {
+  if (!parsedData) return;
+  const title = document.getElementById('quiz-title').value.trim() || 'Untitled Quiz';
+  const btn   = document.getElementById('save-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Saving…';
+
+  try {
+    const res  = await fetch(apiBase() + '/api/quiz', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({
+        title,
+        questions:       parsedData.questions,
+        source_filename: selectedFile ? selectedFile.name : '',
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Save failed.');
+
+    toast(`"${data.title}" saved!`, 'ok');
+    clearFile();
+    parsedData = null;
+    showPanel('library');
+
+  } catch (err) {
+    toast(err.message, 'err');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = 'Save quiz →';
+  }
+}
+
+// ─── Library ──────────────────────────────────────────────────────────────────
+async function loadLibrary() {
+  const body = document.getElementById('lib-body');
+  body.innerHTML = `<div class="card-body" style="text-align:center;padding:2rem;color:var(--ink-dim)"><span class="spinner" style="border-color:rgba(255,255,255,.1);border-top-color:var(--accent)"></span></div>`;
+
+  try {
+    const res  = await fetch(apiBase() + '/api/quizzes');
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not load quizzes.');
+
+    const quizzes = data.quizzes || [];
+    const totalQ  = quizzes.reduce((s, q) => s + q.question_count, 0);
+
+    document.getElementById('stat-total').textContent     = quizzes.length;
+    document.getElementById('stat-questions').textContent = totalQ;
+    document.getElementById('lib-count').textContent      = quizzes.length;
+
+    if (quizzes.length === 0) {
+      body.innerHTML = `
+        <div class="lib-empty">
+          <div class="lib-empty-icon">📭</div>
+          No quizzes saved yet.<br>Upload a file and save your first quiz.
+        </div>`;
+      return;
+    }
+
+    // Store quiz metadata so embed buttons can look up title safely
+    window._quizMeta = {};
+    quizzes.forEach(q => { window._quizMeta[q.id] = q.title; });
+
+    body.innerHTML = `
+      <table class="quiz-table">
+        <thead>
+          <tr>
+            <th>Title</th>
+            <th>Questions</th>
+            <th>Source file</th>
+            <th>Created</th>
+            <th style="text-align:right">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${quizzes.map(q => `
+            <tr>
+              <td class="td-title">${escHtml(q.title)}</td>
+              <td><span class="td-badge">${q.question_count}</span></td>
+              <td class="td-meta">${escHtml(q.source_filename || '—')}</td>
+              <td class="td-meta">${fmtDate(q.created_at)}</td>
+              <td>
+                <div class="td-actions">
+                  <button class="btn btn-sm btn-ghost embed-btn" data-id="${escHtml(q.id)}">
+                    &lt;/&gt; Embed
+                  </button>
+                </div>
+              </td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>`;
+
+    // Attach embed button listeners after DOM is built
+    body.querySelectorAll('.embed-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const id    = btn.dataset.id;
+        const title = window._quizMeta[id] || 'Quiz';
+        openDrawer(id, title);
+      });
+    });
+
+  } catch (err) {
+    body.innerHTML = `<div class="card-body" style="color:var(--red);font-size:13px">${err.message}</div>`;
+  }
+}
+
+// ─── Embed drawer ─────────────────────────────────────────────────────────────
+function openDrawer(quizId, quizTitle) {
+  currentSnipId = quizId;
+  document.getElementById('drawer-quiz-name').textContent = quizTitle;
+
+  const base = apiBase();
+
+  document.getElementById('snip-script').innerHTML = htmlSnip(
+    `<span class="s-cm">&lt;!-- Load quiz engine (once per page) --&gt;</span>\n` +
+    `<span class="s-tag">&lt;script</span> <span class="s-attr">src</span>=<span class="s-val">"quiz-engine.js"</span><span class="s-tag">&gt;&lt;/script&gt;</span>`
+  ) + `<button class="btn btn-sm snippet-copy" onclick="copyText(\`&lt;script src=&quot;quiz-engine.js&quot;&gt;&lt;/script&gt;\`)">Copy</button>`;
+
+  document.getElementById('snip-div').innerHTML = htmlSnip(
+    `<span class="s-tag">&lt;div</span>\n` +
+    `  <span class="s-attr">data-quiz-engine</span>\n` +
+    `  <span class="s-attr">data-quiz-id</span>=<span class="s-val">"${quizId}"</span>\n` +
+    `  <span class="s-attr">data-api</span>=<span class="s-val">"${base}"</span>\n` +
+    `  <span class="s-attr">id</span>=<span class="s-val">"quiz-here"</span>\n` +
+    `<span class="s-tag">&gt;&lt;/div&gt;</span>\n\n` +
+    `<span class="s-cm">&lt;!-- Auto-fetches questions from your backend --&gt;</span>\n` +
+    `<span class="s-tag">&lt;script&gt;</span>\n` +
+    `  fetch(<span class="s-val">"${base}/api/quiz/${quizId}"</span>)\n` +
+    `    .then(r => r.json())\n` +
+    `    .then(d => QuizEngine.init({\n` +
+    `      target:    <span class="s-val">"#quiz-here"</span>,\n` +
+    `      title:     d.title,\n` +
+    `      questions: d.questions\n` +
+    `    }));\n` +
+    `<span class="s-tag">&lt;/script&gt;</span>`
+  ) + `<button class="btn btn-sm snippet-copy" onclick="copyFullEmbed('${quizId}', '${base}')">Copy</button>`;
+
+  document.getElementById('snip-event').innerHTML = htmlSnip(
+    `document.getElementById(<span class="s-val">"quiz-here"</span>)\n` +
+    `  .addEventListener(<span class="s-val">"quizComplete"</span>, (e) => {\n` +
+    `    const { score, total, percent, answers } = e.detail;\n` +
+    `    <span class="s-cm">// POST to your own results endpoint</span>\n` +
+    `    fetch(<span class="s-val">"/api/your-results"</span>, {\n` +
+    `      method: <span class="s-val">"POST"</span>,\n` +
+    `      body:   JSON.stringify({ score, total, percent, answers })\n` +
+    `    });\n` +
+    `  });`
+  ) + `<button class="btn btn-sm snippet-copy" onclick="copyEventSnip()">Copy</button>`;
+
+  document.getElementById('drawer-overlay').classList.add('open');
+  document.getElementById('drawer').classList.add('open');
+}
+
+function htmlSnip(inner) {
+  return `<div style="padding-right:52px">${inner}</div>`;
+}
+
+function closeDrawer() {
+  document.getElementById('drawer-overlay').classList.remove('open');
+  document.getElementById('drawer').classList.remove('open');
+}
+
+function previewQuiz() {
+  if (!currentSnipId) return;
+  const base = apiBase();
+  // Open the backend-served preview page directly
+  window.open(base + '/preview/' + currentSnipId, '_blank');
+}
+
+function previewQuiz_OLD_UNUSED() {
+  if (!currentSnipId) return;
+  const base = apiBase();
+  // Build a self-contained preview page as a blob URL
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Quiz Preview</title>
+  <style>
+    body { background:#f6f6f9; margin:0; padding:2rem 1rem;
+           font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    .wrap { max-width:640px; margin:0 auto; }
+    .top-bar { display:flex; align-items:center; justify-content:space-between;
+               margin-bottom:1.5rem; }
+    .top-bar h1 { font-size:17px; font-weight:600; color:#111; }
+    .badge { font-size:11px; background:#eee; color:#555; padding:3px 10px;
+             border-radius:99px; font-weight:500; }
+    #status { font-size:13px; color:#888; margin-top:2rem; text-align:center; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top-bar">
+    <h1 id="quiz-title-heading">Loading…</h1>
+    <span class="badge">Preview</span>
+  </div>
+  <div id="quiz-mount"></div>
+  <div id="status"></div>
+</div>
+<script src="${base}/static/quiz-engine.js"><\/script>
+<script>
+  fetch("${base}/api/quiz/${currentSnipId}")
+    .then(r => { if(!r.ok) throw new Error("Quiz not found"); return r.json(); })
+    .then(data => {
+      document.getElementById("quiz-title-heading").textContent = data.title;
+      document.title = data.title + " — Quiz Preview";
+      QuizEngine.init({
+        target:    "#quiz-mount",
+        title:     data.title,
+        questions: data.questions
+      });
+    })
+    .catch(err => {
+      document.getElementById("status").textContent = "Could not load quiz: " + err.message;
+    });
+<\/script>
+</body>
+</html>`;
+  const blob = new Blob([html], { type: 'text/html' });
+  const url  = URL.createObjectURL(blob);
+  window.open(url, '_blank');
+}
+
+function copyFullEmbed(quizId, base) {
+  const text =
+`<script src="quiz-engine.js"><\/script>
+
+<div id="quiz-here"></div>
+
+<script>
+  fetch("${base}/api/quiz/${quizId}")
+    .then(r => r.json())
+    .then(d => QuizEngine.init({
+      target:    "#quiz-here",
+      title:     d.title,
+      questions: d.questions
+    }));
+<\/script>`;
+  copyText(text);
+}
+
+function copyEventSnip() {
+  const text =
+`document.getElementById("quiz-here")
+  .addEventListener("quizComplete", (e) => {
+    const { score, total, percent, answers } = e.detail;
+    fetch("/api/your-results", {
+      method: "POST",
+      body:   JSON.stringify({ score, total, percent, answers })
+    });
+  });`;
+  copyText(text);
+}
+
+function copyText(text) {
+  navigator.clipboard.writeText(text)
+    .then(() => toast('Copied to clipboard!', 'ok'))
+    .catch(() => toast('Copy failed — select and copy manually.', 'err'));
+}
+
+// ─── Utilities ────────────────────────────────────────────────────────────────
+function escHtml(s) {
+  return String(s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function fmtDate(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return d.toLocaleDateString('en-GB', { day:'numeric', month:'short', year:'numeric' });
+}
+
+function toast(msg, type = '') {
+  const wrap = document.getElementById('toast-wrap');
+  const el   = document.createElement('div');
+  el.className = 'toast ' + type;
+  el.textContent = msg;
+  wrap.appendChild(el);
+  setTimeout(() => el.remove(), 3200);
+}
+
+// Load library on initial page open
+loadLibrary();
+</script>
+</body>
+</html>

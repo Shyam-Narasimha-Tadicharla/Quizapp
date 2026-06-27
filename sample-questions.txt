@@ -1,0 +1,34 @@
+Q: Which data structure uses LIFO ordering?
+A) Queue
+B) Stack
+C) Linked List
+D) Tree
+Correct: B
+
+Q: What does CSS stand for?
+A) Computer Style Syntax
+B) Cascading Style Sheets
+C) Creative Styling Service
+D) Colorful Sheet System
+Correct: B
+
+Q: Which of the following is NOT a JavaScript primitive type?
+A) String
+B) Boolean
+C) Object
+D) Symbol
+Correct: C
+
+Q: What HTTP status code means "Not Found"?
+A) 200
+B) 301
+C) 403
+D) 404
+Correct: D
+
+Q: In a relational database, a primary key must be:
+A) Nullable and unique
+B) Unique and not null
+C) Shared across tables
+D) Auto-incremented
+Correct: B
