@@ -1448,11 +1448,16 @@ def create_assignment():
     if not quiz_id or not class_name:
         return jsonify({"error": "quiz_id and class_name are required."}), 400
 
-    def _parse_dt(val):
+    def _parse_dt(val, end_of_day=False):
         if not val:
             return None
         try:
-            return datetime.fromisoformat(val.replace("Z", "+00:00"))
+            dt = datetime.fromisoformat(val.replace("Z", "+00:00"))
+            # If no time component was provided (datetime-local gives "YYYY-MM-DDT00:00"),
+            # and this is a closing date, push it to end of day so "30 Jun" means all of 30 Jun.
+            if end_of_day and dt.hour == 0 and dt.minute == 0 and dt.second == 0:
+                dt = dt.replace(hour=23, minute=59, second=59)
+            return dt
         except Exception:
             return None
 
@@ -1471,8 +1476,8 @@ def create_assignment():
             quiz_id    = quiz_id,
             created_by = g.user_id,
             class_name = class_name,
-            opens_at   = _parse_dt(opens_at),
-            closes_at  = _parse_dt(closes_at),
+            opens_at   = _parse_dt(opens_at,  end_of_day=False),
+            closes_at  = _parse_dt(closes_at, end_of_day=True),
         )
         session.add(a)
         session.commit()
@@ -1567,10 +1572,13 @@ def get_take_quiz(class_name: str):
             select(Assignment)
             .where(func.lower(Assignment.class_name) == class_name.strip().lower())
             .where(
-                (Assignment.opens_at.is_(None))  | (Assignment.opens_at  <= now)
+                (Assignment.opens_at.is_(None)) | (Assignment.opens_at <= now)
             )
             .where(
-                (Assignment.closes_at.is_(None)) | (Assignment.closes_at >= now)
+                # Treat closes_at as end-of-day: compare against start of that day
+                # so that "closes 30 Jun" means accessible all of 30 Jun.
+                (Assignment.closes_at.is_(None)) |
+                (func.date(Assignment.closes_at) >= func.date(now))
             )
             .order_by(Assignment.created_at.desc())
         ).scalar_one_or_none()
@@ -1633,7 +1641,8 @@ def submit_quiz(class_name: str):
         if a is None:
             return jsonify({"error": "Assignment not found."}), 404
 
-        if a.closes_at and a.closes_at < now:
+        from sqlalchemy import cast, Date as SADate
+        if a.closes_at and a.closes_at.date() < now.date():
             return jsonify({"error": "This assignment has closed."}), 403
 
         # Load correct answers for scoring
