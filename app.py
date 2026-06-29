@@ -762,8 +762,53 @@ def create_quiz():
 @app.route("/api/quizzes", methods=["GET"])
 @require_auth
 def get_quizzes():
-    """List all quizzes for the authenticated school."""
-    return jsonify({"quizzes": list_quizzes(g.school_id)})
+    """
+    List quizzes for the authenticated school.
+    Teachers with subject assignments only see quizzes that contain
+    at least one question whose topic is in their allowed set.
+    """
+    with Session(_engine) as session:
+        allowed = _allowed_topics_for_user(session, g.user)
+
+    if allowed is None:
+        return jsonify({"quizzes": list_quizzes(g.school_id)})
+
+    # Restrict to quizzes that have at least one question in allowed topics
+    with Session(_engine) as session:
+        count_subq = (
+            select(
+                QuizQuestion.quiz_id,
+                func.count(QuizQuestion.question_id).label("question_count"),
+            )
+            .group_by(QuizQuestion.quiz_id)
+            .subquery()
+        )
+        allowed_quiz_ids_subq = (
+            select(QuizQuestion.quiz_id)
+            .join(Question, Question.id == QuizQuestion.question_id)
+            .where(Question.topic.in_(allowed))
+            .distinct()
+            .subquery()
+        )
+        stmt = (
+            select(Quiz, count_subq.c.question_count)
+            .outerjoin(count_subq, count_subq.c.quiz_id == Quiz.id)
+            .where(Quiz.school_id == g.school_id)
+            .where(Quiz.id.in_(select(allowed_quiz_ids_subq.c.quiz_id)))
+            .order_by(Quiz.created_at.desc())
+        )
+        rows = session.execute(stmt).all()
+
+    return jsonify({"quizzes": [
+        {
+            "id":              quiz.id,
+            "title":           quiz.title,
+            "source_filename": quiz.source_filename,
+            "created_at":      quiz.created_at.isoformat(),
+            "question_count":  count or 0,
+        }
+        for quiz, count in rows
+    ]})
 
 
 def _allowed_topics_for_user(session, user) -> list[str] | None:
