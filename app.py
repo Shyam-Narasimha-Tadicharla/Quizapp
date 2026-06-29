@@ -16,15 +16,19 @@ Routes
 import os
 import re
 import uuid
-import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
+from dotenv import load_dotenv
+load_dotenv()  # loads .env for local dev; no-op in production where env vars are set directly
+
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import fitz  # PyMuPDF
-from upstash_redis import Redis
+from sqlalchemy import create_engine, select, func
+from sqlalchemy.orm import Session
+from models import Quiz, Question, QuizQuestion
 
 # ─── App setup ────────────────────────────────────────────────────────────────
 
@@ -36,6 +40,25 @@ log = logging.getLogger(__name__)
 
 ALLOWED_EXTENSIONS = {"pdf", "txt"}
 MAX_FILE_BYTES     = 10 * 1024 * 1024  # 10 MB
+
+
+# ─── Database setup ───────────────────────────────────────────────────────────
+#
+# pool_pre_ping: before handing out a connection, ping with SELECT 1.
+#   Catches connections silently dropped by PgBouncer's idle timeout.
+# pool_recycle=300: replace connections older than 5 min proactively,
+#   before PgBouncer drops them (its default idle timeout is ~10 min).
+# pool_size=1 / max_overflow=0: each Vercel serverless invocation is its
+#   own process — there is nothing to share between requests, so one
+#   connection is the right pool size.
+
+_engine = create_engine(
+    os.environ["DATABASE_URL"],
+    pool_pre_ping=True,
+    pool_recycle=300,
+    pool_size=1,
+    max_overflow=0,
+)
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -123,61 +146,124 @@ def parse_questions(raw: str) -> list[dict]:
     return questions
 
 
-def _get_redis() -> Redis:
-    return Redis(
-        url=os.environ["KV_REST_API_URL"],
-        token=os.environ["KV_REST_API_TOKEN"],
-    )
-
-
 def save_quiz(title: str, questions: list[dict], source_filename: str = "") -> dict:
-    """Persist a quiz to Vercel KV and return its metadata."""
-    quiz_id = str(uuid.uuid4())
-    now     = datetime.now(timezone.utc).isoformat()
-    record  = {
+    """
+    Persist a quiz and its questions to PostgreSQL.
+
+    Incoming questions use the legacy API field names {q, opts, correct}.
+    These are translated to DB column names {text, options, correct_index}
+    on the way in. The returned dict uses the legacy names so the API
+    response shape is unchanged.
+    """
+    quiz_id  = str(uuid.uuid4())
+    now      = datetime.now(timezone.utc)
+
+    with Session(_engine) as session:
+        quiz = Quiz(
+            id              = quiz_id,
+            title           = title or "Untitled Quiz",
+            source_filename = source_filename,
+            created_at      = now,
+        )
+        session.add(quiz)
+
+        for position, q in enumerate(questions):
+            question = Question(
+                id            = str(uuid.uuid4()),
+                text          = q["q"],
+                options       = q["opts"],
+                correct_index = q["correct"],
+            )
+            session.add(question)
+            session.add(QuizQuestion(
+                quiz_id     = quiz_id,
+                question_id = question.id,
+                position    = position,
+            ))
+
+        session.commit()
+
+    log.info("Saved quiz %s (%d questions)", quiz_id, len(questions))
+
+    return {
         "id":              quiz_id,
         "title":           title or "Untitled Quiz",
         "source_filename": source_filename,
-        "created_at":      now,
+        "created_at":      now.isoformat(),
         "question_count":  len(questions),
         "questions":       questions,
     }
-    r = _get_redis()
-    r.set(f"quiz:{quiz_id}", json.dumps(record, ensure_ascii=False))
-    r.rpush("quiz:index", quiz_id)
-    log.info("Saved quiz %s (%d questions)", quiz_id, len(questions))
-    return record
 
 
 def load_quiz(quiz_id: str) -> dict | None:
-    """Load a quiz by ID from Vercel KV, or None if not found."""
-    data = _get_redis().get(f"quiz:{quiz_id}")
-    if data is None:
-        return None
-    return json.loads(data)
+    """
+    Load a quiz and its questions by ID.
+
+    Translates DB column names back to legacy API field names so the
+    GET /api/quiz/<id> response is identical to what the frontend expects.
+    Questions are returned in insertion order via the position column.
+    """
+    with Session(_engine) as session:
+        quiz = session.get(Quiz, quiz_id)
+        if quiz is None:
+            return None
+
+        stmt = (
+            select(Question)
+            .join(QuizQuestion, QuizQuestion.question_id == Question.id)
+            .where(QuizQuestion.quiz_id == quiz_id)
+            .order_by(QuizQuestion.position)
+        )
+        rows = session.execute(stmt).scalars().all()
+
+        questions = [
+            {"q": row.text, "opts": row.options, "correct": row.correct_index}
+            for row in rows
+        ]
+
+        return {
+            "id":              quiz.id,
+            "title":           quiz.title,
+            "source_filename": quiz.source_filename,
+            "created_at":      quiz.created_at.isoformat(),
+            "question_count":  len(questions),
+            "questions":       questions,
+        }
 
 
 def list_quizzes() -> list[dict]:
-    """Return metadata (no questions) for all saved quizzes, newest first."""
-    r = _get_redis()
-    ids = r.lrange("quiz:index", 0, -1)
-    records = []
-    for quiz_id in ids:
-        data = r.get(f"quiz:{quiz_id}")
-        if data is None:
-            continue
-        try:
-            q = json.loads(data)
-            records.append({
-                "id":              q["id"],
-                "title":           q["title"],
-                "source_filename": q.get("source_filename", ""),
-                "created_at":      q["created_at"],
-                "question_count":  q["question_count"],
-            })
-        except Exception:
-            pass
-    return sorted(records, key=lambda r: r["created_at"], reverse=True)
+    """
+    Return metadata (no questions) for all quizzes, newest first.
+
+    Uses a COUNT subquery so this is always a single SQL query regardless
+    of how many quizzes exist — no N+1 problem.
+    """
+    with Session(_engine) as session:
+        count_subq = (
+            select(
+                QuizQuestion.quiz_id,
+                func.count(QuizQuestion.question_id).label("question_count"),
+            )
+            .group_by(QuizQuestion.quiz_id)
+            .subquery()
+        )
+        stmt = (
+            select(Quiz, count_subq.c.question_count)
+            .outerjoin(count_subq, count_subq.c.quiz_id == Quiz.id)
+            .order_by(Quiz.created_at.desc())
+        )
+        rows = session.execute(stmt).all()
+
+        return [
+            {
+                "id":              quiz.id,
+                "title":           quiz.title,
+                "source_filename": quiz.source_filename,
+                "created_at":      quiz.created_at.isoformat(),
+                "question_count":  count or 0,
+            }
+            for quiz, count in rows
+        ]
 
 
 # ─── Routes ───────────────────────────────────────────────────────────────────
