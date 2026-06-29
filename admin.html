@@ -457,20 +457,7 @@
     }
     .auth-logo-text { font-size: 16px; font-weight: 700; color: var(--ink); }
     .auth-tagline { font-size: 13px; color: var(--ink-dim); }
-    .auth-tabs {
-      display: flex; gap: 0;
-      background: var(--surface-2);
-      border: 1px solid var(--border);
-      border-radius: 8px; padding: 3px;
-    }
-    .auth-tab {
-      flex: 1; text-align: center;
-      padding: 7px; font-size: 13px; font-weight: 500;
-      border-radius: 6px; cursor: pointer;
-      color: var(--ink-dim); transition: all .15s;
-    }
-    .auth-tab.active { background: var(--surface-3); color: var(--ink); }
-    .auth-field { display: flex; flex-direction: column; gap: 5px; }
+.auth-field { display: flex; flex-direction: column; gap: 5px; }
     .auth-field label { font-size: 12px; font-weight: 500; color: var(--ink-dim); }
     .auth-input {
       background: var(--surface-2);
@@ -537,11 +524,6 @@
       <div class="auth-tagline">Sign in to manage your school's quizzes</div>
     </div>
 
-    <div class="auth-tabs">
-      <div class="auth-tab active" id="tab-login"  onclick="switchAuthTab('login')">Sign in</div>
-      <div class="auth-tab"        id="tab-signup" onclick="switchAuthTab('signup')">Create account</div>
-    </div>
-
     <div class="auth-field">
       <label for="auth-email">Email</label>
       <input class="auth-input" type="email" id="auth-email" placeholder="you@school.edu" autocomplete="email" />
@@ -550,10 +532,6 @@
       <label for="auth-password">Password</label>
       <input class="auth-input" type="password" id="auth-password" placeholder="••••••••" autocomplete="current-password" />
     </div>
-    <div class="auth-field" id="school-field" style="display:none">
-      <label for="auth-school">School name</label>
-      <input class="auth-input" type="text" id="auth-school" placeholder="e.g. Greenwood High School" />
-    </div>
 
     <div class="auth-error" id="auth-error"></div>
 
@@ -561,8 +539,8 @@
       Sign in
     </button>
 
-    <div class="auth-switch" id="auth-switch">
-      Don't have an account? <span onclick="switchAuthTab('signup')">Create one</span>
+    <div class="auth-switch">
+      New school? <span onclick="window.location='/setup'">Contact your administrator</span>
     </div>
   </div>
 </div>
@@ -789,20 +767,6 @@ function loadSession() {
 }
 
 // ─── Auth UI ──────────────────────────────────────────────────────────────────
-let _authTab = 'login';
-
-function switchAuthTab(tab) {
-  _authTab = tab;
-  document.getElementById('tab-login').classList.toggle('active',  tab === 'login');
-  document.getElementById('tab-signup').classList.toggle('active', tab === 'signup');
-  document.getElementById('school-field').style.display = tab === 'signup' ? '' : 'none';
-  document.getElementById('auth-submit-btn').textContent = tab === 'login' ? 'Sign in' : 'Create account';
-  document.getElementById('auth-switch').innerHTML = tab === 'login'
-    ? 'Don\'t have an account? <span onclick="switchAuthTab(\'signup\')">Create one</span>'
-    : 'Already have an account? <span onclick="switchAuthTab(\'login\')">Sign in</span>';
-  document.getElementById('auth-error').classList.remove('visible');
-  document.getElementById('auth-password').autocomplete = tab === 'login' ? 'current-password' : 'new-password';
-}
 
 function showAuthError(msg) {
   const el = document.getElementById('auth-error');
@@ -813,51 +777,29 @@ function showAuthError(msg) {
 async function submitAuth() {
   const email    = document.getElementById('auth-email').value.trim();
   const password = document.getElementById('auth-password').value;
-  const school   = document.getElementById('auth-school').value.trim();
   const btn      = document.getElementById('auth-submit-btn');
 
   document.getElementById('auth-error').classList.remove('visible');
-
   if (!email || !password) { showAuthError('Email and password are required.'); return; }
-  if (_authTab === 'signup' && !school) { showAuthError('School name is required.'); return; }
 
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner"></span>';
 
   try {
-    const endpoint = _authTab === 'login' ? '/api/auth/login' : '/api/auth/signup';
-    const body     = _authTab === 'login'
-      ? { email, password }
-      : { email, password, school_name: school };
-
-    const res  = await fetch(apiBase() + endpoint, {
+    const res  = await fetch(apiBase() + '/api/auth/login', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify(body),
+      body:    JSON.stringify({ email, password }),
     });
     const data = await res.json();
-
     if (!res.ok) { showAuthError(data.error || 'Something went wrong.'); return; }
-
-    if (_authTab === 'signup') {
-      switchAuthTab('login');
-      const el = document.getElementById('auth-error');
-      el.style.color        = 'var(--green)';
-      el.style.borderColor  = 'var(--green)';
-      el.style.background   = 'var(--green-bg)';
-      el.textContent        = data.message || 'Account created! You can now sign in.';
-      el.classList.add('visible');
-      return;
-    }
-
     saveSession(data);
     showApp();
-
   } catch (err) {
     showAuthError('Network error. Is the backend reachable?');
   } finally {
     btn.disabled = false;
-    btn.textContent = _authTab === 'login' ? 'Sign in' : 'Create account';
+    btn.textContent = 'Sign in';
   }
 }
 
