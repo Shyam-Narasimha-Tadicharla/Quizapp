@@ -659,7 +659,7 @@
       <div class="logo-mark">Q</div>
       <div>
         <div class="logo-text">QuizEngine</div>
-        <div class="logo-sub">Admin</div>
+        <div class="logo-sub" id="logo-role">—</div>
       </div>
     </div>
 
@@ -964,15 +964,17 @@ function authHeaders() {
 
 function saveSession(data) {
   _session = data;
-  localStorage.setItem('qe-session', JSON.stringify(data));
+  // sessionStorage is tab-local — each tab holds its own login independently,
+  // so admin and teacher can be open simultaneously in different tabs.
+  sessionStorage.setItem('qe-session', JSON.stringify(data));
 }
 function clearSession() {
   _session = null;
-  localStorage.removeItem('qe-session');
+  sessionStorage.removeItem('qe-session');
 }
 function loadSession() {
   try {
-    const raw = localStorage.getItem('qe-session');
+    const raw = sessionStorage.getItem('qe-session');
     if (raw) _session = JSON.parse(raw);
   } catch { _session = null; }
 }
@@ -1024,16 +1026,16 @@ document.addEventListener('keydown', e => {
 function showApp() {
   document.getElementById('auth-screen').classList.remove('visible');
   if (_session && _session.user) {
-    const u = _session.user;
-    document.getElementById('user-chip').style.display = 'flex';
-    document.getElementById('user-avatar').textContent = u.email[0].toUpperCase();
+    const u    = _session.user;
+    const role = u.role || 'teacher';
+    document.getElementById('user-chip').style.display        = 'flex';
+    document.getElementById('user-avatar').textContent        = u.email[0].toUpperCase();
     document.getElementById('user-email-display').textContent = u.email;
-    document.getElementById('user-role-display').textContent  = u.role || 'teacher';
-    if (u.role === 'admin') {
-      document.getElementById('nav-team').style.display = '';
-    } else {
-      document.getElementById('nav-upload').style.display = 'none';
-    }
+    document.getElementById('user-role-display').textContent  = role;
+    document.getElementById('logo-role').textContent          = role.charAt(0).toUpperCase() + role.slice(1);
+    // Role-gated nav items — set explicitly every time so refresh is correct
+    document.getElementById('nav-upload').style.display = (role === 'admin') ? '' : 'none';
+    document.getElementById('nav-team').style.display   = (role === 'admin') ? '' : 'none';
   }
   loadLibrary();
 }
