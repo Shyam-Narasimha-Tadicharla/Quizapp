@@ -165,6 +165,7 @@ def parse_questions(raw: str) -> list[dict]:
 
     Expected format (one blank line between questions):
 
+        Topic: Algebra          ← optional; applies to all questions until next Topic: line
         Q: What does CSS stand for?
         A) Computer Style Syntax
         B) Cascading Style Sheets
@@ -173,7 +174,7 @@ def parse_questions(raw: str) -> list[dict]:
         Correct: B
 
     Returns:
-        [{ "q": str, "opts": [str, ...], "correct": int }, ...]
+        [{ "q": str, "opts": [str, ...], "correct": int, "topic": str|None }, ...]
     """
     OPT_MAP = {"A": 0, "B": 1, "C": 2, "D": 3, "E": 4}
 
@@ -181,14 +182,24 @@ def parse_questions(raw: str) -> list[dict]:
     if not blocks:
         raise ValueError("No question blocks found in the file.")
 
-    questions = []
+    questions   = []
+    current_topic = None  # sticky — carries forward until a new Topic: line appears
 
     for idx, block in enumerate(blocks, start=1):
         lines = [l.strip() for l in block.splitlines() if l.strip()]
 
+        # Topic: line is optional and sets the sticky topic for following questions
+        t_line = next((l for l in lines if re.match(r"^Topic:", l, re.I)), None)
+        if t_line:
+            current_topic = re.sub(r"^Topic:\s*", "", t_line, flags=re.I).strip() or None
+
         q_line    = next((l for l in lines if re.match(r"^Q:", l, re.I)), None)
         opt_lines = [l for l in lines if re.match(r"^[A-Ea-e]\)", l)]
         c_line    = next((l for l in lines if re.match(r"^Correct:", l, re.I)), None)
+
+        # A block with only a Topic: line is valid — it just sets the topic
+        if not q_line and t_line:
+            continue
 
         if not q_line:
             raise ValueError(f"Block {idx}: missing 'Q:' line.")
@@ -209,6 +220,7 @@ def parse_questions(raw: str) -> list[dict]:
             "q":       re.sub(r"^Q:\s*", "", q_line, flags=re.I).strip(),
             "opts":    [re.sub(r"^[A-Ea-e]\)\s*", "", l).strip() for l in opt_lines],
             "correct": correct_idx,
+            "topic":   current_topic,
         })
 
     return questions
@@ -242,6 +254,7 @@ def save_quiz(title: str, questions: list[dict], source_filename: str,
                 text          = q["q"],
                 options       = q["opts"],
                 correct_index = q["correct"],
+                topic         = q.get("topic"),
             )
             session.add(question)
             session.add(QuizQuestion(
@@ -283,7 +296,7 @@ def load_quiz(quiz_id: str) -> dict | None:
         rows = session.execute(stmt).scalars().all()
 
         questions = [
-            {"q": row.text, "opts": row.options, "correct": row.correct_index}
+            {"q": row.text, "opts": row.options, "correct": row.correct_index, "topic": row.topic}
             for row in rows
         ]
 
@@ -746,6 +759,122 @@ def create_quiz():
 def get_quizzes():
     """List all quizzes for the authenticated school."""
     return jsonify({"quizzes": list_quizzes(g.school_id)})
+
+
+@app.route("/api/questions", methods=["GET"])
+@require_auth
+def get_questions():
+    """
+    List all questions in the school's question bank.
+    Optional query param: ?topic=Algebra  — filters by topic.
+    """
+    topic_filter = request.args.get("topic", "").strip() or None
+
+    with Session(_engine) as session:
+        stmt = select(Question).where(Question.school_id == g.school_id)
+        if topic_filter:
+            stmt = stmt.where(Question.topic == topic_filter)
+        stmt = stmt.order_by(Question.topic.nulls_last(), Question.text)
+        rows = session.execute(stmt).scalars().all()
+
+    return jsonify({
+        "questions": [
+            {
+                "id":            row.id,
+                "text":          row.text,
+                "options":       row.options,
+                "correct_index": row.correct_index,
+                "topic":         row.topic,
+            }
+            for row in rows
+        ]
+    })
+
+
+@app.route("/api/topics", methods=["GET"])
+@require_auth
+def get_topics():
+    """List all distinct topics used by this school's questions, sorted."""
+    with Session(_engine) as session:
+        rows = session.execute(
+            select(Question.topic)
+            .where(Question.school_id == g.school_id)
+            .where(Question.topic.isnot(None))
+            .distinct()
+            .order_by(Question.topic)
+        ).scalars().all()
+
+    return jsonify({"topics": list(rows)})
+
+
+@app.route("/api/quiz/from-bank", methods=["POST"])
+@require_auth
+def create_quiz_from_bank():
+    """
+    Create a quiz by selecting existing question IDs from the bank.
+
+    JSON body:
+      { title: str, question_ids: [uuid, ...] }
+
+    Questions must belong to the authenticated school.
+    Order in the resulting quiz matches the order of question_ids in the request.
+    """
+    body = request.get_json(silent=True)
+    if not body:
+        return jsonify({"error": "Request body must be JSON."}), 400
+
+    title        = (body.get("title") or "").strip() or "Untitled Quiz"
+    question_ids = body.get("question_ids")
+
+    if not isinstance(question_ids, list) or len(question_ids) == 0:
+        return jsonify({"error": "'question_ids' must be a non-empty array."}), 400
+
+    with Session(_engine) as session:
+        # Fetch all requested questions, verifying they belong to this school
+        rows = session.execute(
+            select(Question)
+            .where(Question.id.in_(question_ids))
+            .where(Question.school_id == g.school_id)
+        ).scalars().all()
+
+        found_ids = {row.id for row in rows}
+        missing   = [qid for qid in question_ids if qid not in found_ids]
+        if missing:
+            return jsonify({"error": f"Question IDs not found: {missing}"}), 404
+
+        # Preserve the caller's requested order
+        questions_by_id = {row.id: row for row in rows}
+        ordered         = [questions_by_id[qid] for qid in question_ids]
+
+        quiz_id = str(uuid.uuid4())
+        now     = datetime.now(timezone.utc)
+
+        quiz = Quiz(
+            id              = quiz_id,
+            school_id       = g.school_id,
+            created_by      = g.user_id,
+            title           = title,
+            source_filename = "",
+            created_at      = now,
+        )
+        session.add(quiz)
+
+        for position, q in enumerate(ordered):
+            session.add(QuizQuestion(
+                quiz_id     = quiz_id,
+                question_id = q.id,
+                position    = position,
+            ))
+
+        session.commit()
+
+    log.info("Quiz from bank: %s (%d questions) school=%s", quiz_id, len(ordered), g.school_id)
+    return jsonify({
+        "id":             quiz_id,
+        "title":          title,
+        "created_at":     now.isoformat(),
+        "question_count": len(ordered),
+    }), 201
 
 
 # ─── Entry point ──────────────────────────────────────────────────────────────

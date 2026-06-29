@@ -428,6 +428,31 @@
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: var(--border-hi); border-radius: 99px; }
 
+    /* ── Question bank ── */
+    .bank-row {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: .75rem 1rem;
+      cursor: pointer;
+      transition: border-color .15s, background .15s;
+      user-select: none;
+    }
+    .bank-row:hover { border-color: var(--border-hi); background: var(--surface-2); }
+    .bank-row.selected { border-color: var(--accent); background: var(--accent-bg); }
+    .bank-row-topic {
+      font-size: 11px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: .06em; color: var(--accent-hi); margin-bottom: 4px;
+    }
+    .bank-row-text { font-size: 13.5px; color: var(--ink); line-height: 1.4; }
+    .bank-row-opts { font-size: 12px; color: var(--ink-dim); margin-top: 4px; }
+    .bank-topic-header {
+      font-size: 11px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: .07em; color: var(--ink-dim);
+      padding: .5rem 0 .25rem; border-bottom: 1px solid var(--border);
+      margin-bottom: 4px;
+    }
+
     /* ── Auth screen ── */
     .auth-screen {
       display: none;
@@ -564,6 +589,10 @@
       <span class="nav-icon">☰</span> Quiz Library
       <span class="nav-count" id="lib-count">—</span>
     </div>
+    <div class="nav-item" onclick="showPanel('bank')" id="nav-bank">
+      <span class="nav-icon">🗄</span> Question Bank
+      <span class="nav-count" id="bank-count">—</span>
+    </div>
 
     <div class="sidebar-footer">
       <div class="user-chip" id="user-chip" style="display:none">
@@ -679,6 +708,34 @@
 
     </div><!-- /panel-library -->
 
+    <!-- ═══════════════════════════════════════
+         PANEL 4 — Question Bank
+    ═══════════════════════════════════════ -->
+    <div class="panel" id="panel-bank">
+
+      <div style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap;">
+        <div class="stat-card">
+          <div class="stat-val" id="bank-stat-total">—</div>
+          <div class="stat-label">Total questions</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-val" id="bank-stat-topics">—</div>
+          <div class="stat-label">Topics</div>
+        </div>
+        <div style="margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <select id="topic-filter" class="api-url-input" style="width:180px;padding:7px 10px;font-size:13px" onchange="loadBank()">
+            <option value="">All topics</option>
+          </select>
+          <button class="btn btn-primary btn-sm" onclick="openBankQuizModal()">+ Create quiz from bank</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div id="bank-body"></div>
+      </div>
+
+    </div><!-- /panel-bank -->
+
   </div><!-- /main -->
 </div><!-- /shell -->
 
@@ -724,6 +781,30 @@
   <div class="step"><div class="step-num">1</div><div class="step-text">Host <strong>quiz-engine.js</strong> on your server or a CDN and update the <strong>src</strong> path in snippet 1.</div></div>
   <div class="step"><div class="step-num">2</div><div class="step-text">Make sure your backend is reachable and update the <strong>fetch URL</strong> in your page's JS if needed.</div></div>
   <div class="step"><div class="step-num">3</div><div class="step-text">Paste both snippets into any HTML page. The quiz renders automatically on load.</div></div>
+</div>
+
+<!-- ── Create-from-bank modal ── -->
+<div class="drawer-overlay" id="bank-modal-overlay" onclick="closeBankModal()"></div>
+<div class="drawer" id="bank-modal" style="width:540px">
+  <div class="drawer-head">
+    <div>
+      <div class="drawer-title">Create quiz from bank</div>
+      <div class="drawer-sub">Select questions then give the quiz a title</div>
+    </div>
+    <button class="drawer-close" onclick="closeBankModal()">✕</button>
+  </div>
+
+  <div style="display:flex;gap:8px;margin-bottom:1rem">
+    <input class="api-url-input" id="bank-quiz-title" placeholder="Quiz title…"
+           style="flex:1;padding:8px 10px;font-size:13px" />
+    <button class="btn btn-primary btn-sm" onclick="saveFromBank()">Save quiz</button>
+  </div>
+
+  <div style="font-size:12px;color:var(--ink-dim);margin-bottom:.5rem">
+    <span id="bank-selected-count">0</span> questions selected
+  </div>
+
+  <div id="bank-modal-list" style="overflow-y:auto;flex:1;display:flex;flex-direction:column;gap:6px"></div>
 </div>
 
 <!-- ── Toast container ── -->
@@ -851,6 +932,7 @@ const PANELS = {
   upload:  { title: 'Upload Questions', sub: 'Parse a PDF or text file into a quiz' },
   preview: { title: 'Preview & Save',   sub: 'Check the extracted questions before saving' },
   library: { title: 'Quiz Library',     sub: 'All saved quizzes' },
+  bank:    { title: 'Question Bank',    sub: 'All questions across all quizzes' },
 };
 
 function showPanel(name) {
@@ -862,6 +944,7 @@ function showPanel(name) {
   document.getElementById('topbar-sub').textContent   = PANELS[name].sub;
   document.getElementById('topbar-actions').innerHTML = '';
   if (name === 'library') { loadLibrary(); }
+  if (name === 'bank')    { loadBank(); }
 }
 
 // ─── Upload zone ──────────────────────────────────────────────────────────────
@@ -1252,6 +1335,146 @@ function toast(msg, type = '') {
   el.textContent = msg;
   wrap.appendChild(el);
   setTimeout(() => el.remove(), 3200);
+}
+
+// ─── Question Bank ────────────────────────────────────────────────────────────
+let _bankQuestions = [];      // all questions loaded for current filter
+let _selectedIds   = new Set(); // IDs selected for quiz creation
+
+async function loadBank() {
+  const body        = document.getElementById('bank-body');
+  const topicFilter = document.getElementById('topic-filter').value;
+  body.innerHTML    = `<div class="card-body" style="text-align:center;padding:2rem;color:var(--ink-dim)"><span class="spinner" style="border-color:rgba(255,255,255,.1);border-top-color:var(--accent)"></span></div>`;
+
+  try {
+    const [qRes, tRes] = await Promise.all([
+      fetch(apiBase() + '/api/questions' + (topicFilter ? `?topic=${encodeURIComponent(topicFilter)}` : ''), { headers: authHeaders() }),
+      fetch(apiBase() + '/api/topics', { headers: authHeaders() }),
+    ]);
+
+    if (qRes.status === 401 || tRes.status === 401) { clearSession(); showLogin(); return; }
+
+    const qData = await qRes.json();
+    const tData = await tRes.json();
+
+    _bankQuestions = qData.questions || [];
+    const topics   = tData.topics   || [];
+
+    // Update topic filter dropdown
+    const sel = document.getElementById('topic-filter');
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">All topics</option>' +
+      topics.map(t => `<option value="${escHtml(t)}" ${t === cur ? 'selected' : ''}>${escHtml(t)}</option>`).join('');
+
+    document.getElementById('bank-stat-total').textContent  = _bankQuestions.length;
+    document.getElementById('bank-stat-topics').textContent = topics.length;
+    document.getElementById('bank-count').textContent       = _bankQuestions.length;
+
+    if (_bankQuestions.length === 0) {
+      body.innerHTML = `<div class="lib-empty"><div class="lib-empty-icon">📭</div>No questions yet. Upload a file to populate the bank.</div>`;
+      return;
+    }
+
+    // Group by topic
+    const grouped = {};
+    _bankQuestions.forEach(q => {
+      const t = q.topic || 'Untagged';
+      if (!grouped[t]) grouped[t] = [];
+      grouped[t].push(q);
+    });
+
+    body.innerHTML = `<div style="padding:1rem;display:flex;flex-direction:column;gap:6px">` +
+      Object.entries(grouped).map(([topic, qs]) => `
+        <div class="bank-topic-header">${escHtml(topic)} <span style="font-weight:400;color:var(--ink-faint)">(${qs.length})</span></div>
+        ${qs.map(q => `
+          <div class="bank-row" data-id="${q.id}" onclick="toggleBankRow(this)">
+            <div class="bank-row-text">${escHtml(q.text)}</div>
+            <div class="bank-row-opts">${q.options.map((o,i) => `${['A','B','C','D','E'][i]}) ${escHtml(o)}`).join(' · ')}</div>
+          </div>
+        `).join('')}
+      `).join('') + `</div>`;
+
+  } catch (err) {
+    body.innerHTML = `<div class="card-body" style="color:var(--red);font-size:13px">${err.message}</div>`;
+  }
+}
+
+function toggleBankRow(el) {
+  const id = el.dataset.id;
+  if (_selectedIds.has(id)) {
+    _selectedIds.delete(id);
+    el.classList.remove('selected');
+  } else {
+    _selectedIds.add(id);
+    el.classList.add('selected');
+  }
+}
+
+function openBankQuizModal() {
+  if (_bankQuestions.length === 0) { toast('No questions in the bank yet.', 'err'); return; }
+
+  // Populate modal list (same questions, selectable)
+  const list = document.getElementById('bank-modal-list');
+  const grouped = {};
+  _bankQuestions.forEach(q => {
+    const t = q.topic || 'Untagged';
+    if (!grouped[t]) grouped[t] = [];
+    grouped[t].push(q);
+  });
+
+  _selectedIds.clear();
+  document.getElementById('bank-selected-count').textContent = '0';
+  document.getElementById('bank-quiz-title').value = '';
+
+  list.innerHTML = Object.entries(grouped).map(([topic, qs]) => `
+    <div class="bank-topic-header">${escHtml(topic)}</div>
+    ${qs.map(q => `
+      <div class="bank-row" data-id="${q.id}" onclick="toggleModalRow(this)">
+        <div class="bank-row-text">${escHtml(q.text)}</div>
+        <div class="bank-row-opts">${q.options.map((o,i) => `${['A','B','C','D','E'][i]}) ${escHtml(o)}`).join(' · ')}</div>
+      </div>
+    `).join('')}
+  `).join('');
+
+  document.getElementById('bank-modal-overlay').classList.add('open');
+  document.getElementById('bank-modal').classList.add('open');
+}
+
+function toggleModalRow(el) {
+  const id = el.dataset.id;
+  if (_selectedIds.has(id)) {
+    _selectedIds.delete(id);
+    el.classList.remove('selected');
+  } else {
+    _selectedIds.add(id);
+    el.classList.add('selected');
+  }
+  document.getElementById('bank-selected-count').textContent = _selectedIds.size;
+}
+
+function closeBankModal() {
+  document.getElementById('bank-modal-overlay').classList.remove('open');
+  document.getElementById('bank-modal').classList.remove('open');
+}
+
+async function saveFromBank() {
+  const title = document.getElementById('bank-quiz-title').value.trim() || 'Untitled Quiz';
+  if (_selectedIds.size === 0) { toast('Select at least one question.', 'err'); return; }
+
+  try {
+    const res  = await fetch(apiBase() + '/api/quiz/from-bank', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body:    JSON.stringify({ title, question_ids: [..._selectedIds] }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Save failed.');
+    toast(`"${data.title}" saved!`, 'ok');
+    closeBankModal();
+    showPanel('library');
+  } catch (err) {
+    toast(err.message, 'err');
+  }
 }
 
 // Load library on initial page open

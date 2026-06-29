@@ -1,8 +1,8 @@
 """
-SQLAlchemy 2.0 ORM models — Phase 2 schema.
+SQLAlchemy 2.0 ORM models — Phase 3 schema.
 
 Tables built now:   schools, quizzes, questions, quiz_questions, users
-Tables deferred:    topics (Phase 3), results/answers (Phase 6)
+Tables deferred:    results/answers (Phase 6)
 
 Column names follow the ROADMAP spec (text / options / correct_index).
 The app layer translates between the legacy API names (q / opts / correct)
@@ -90,10 +90,9 @@ class Question(Base):
     id            = Column(UUID(as_uuid=False), primary_key=True, default=_uuid)
     school_id     = Column(UUID(as_uuid=False), ForeignKey("schools.id"), nullable=False)
     text          = Column(Text, nullable=False)
-    options       = Column(ARRAY(Text), nullable=False)  # ["Stack", "Queue", ...]
-    correct_index = Column(Integer, nullable=False)       # 0-based index into options
-
-    # topic_id and difficulty deferred to Phase 3
+    options       = Column(ARRAY(Text), nullable=False)
+    correct_index = Column(Integer, nullable=False)
+    topic         = Column(String(255), nullable=True)   # e.g. "Algebra", "World War II"
 
     school         = relationship("School", back_populates="questions")
     quiz_questions = relationship("QuizQuestion", back_populates="question")
