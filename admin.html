@@ -840,11 +840,13 @@ async function submitAuth() {
     if (!res.ok) { showAuthError(data.error || 'Something went wrong.'); return; }
 
     if (_authTab === 'signup') {
-      showAuthError('');
-      document.getElementById('auth-error').style.color = 'var(--green)';
-      document.getElementById('auth-error').textContent = data.message || 'Account created! Check your email then sign in.';
-      document.getElementById('auth-error').classList.add('visible');
       switchAuthTab('login');
+      const el = document.getElementById('auth-error');
+      el.style.color        = 'var(--green)';
+      el.style.borderColor  = 'var(--green)';
+      el.style.background   = 'var(--green-bg)';
+      el.textContent        = data.message || 'Account created! You can now sign in.';
+      el.classList.add('visible');
       return;
     }
 

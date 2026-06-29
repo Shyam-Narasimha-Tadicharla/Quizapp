@@ -498,7 +498,7 @@ def signup():
         session.commit()
 
     log.info("New school created: %s (%s) by %s", school_name, school_id, email)
-    return jsonify({"message": "Account created. Check your email to confirm before logging in."}), 201
+    return jsonify({"message": "Account created. You can now sign in."}), 201
 
 
 @app.route("/api/auth/login", methods=["POST"])
