@@ -679,7 +679,9 @@ def login():
 @app.route("/api/parse", methods=["POST"])
 @require_auth
 def parse_file():
-    """Upload a PDF or TXT file → receive parsed questions."""
+    """Upload a PDF or TXT file → receive parsed questions. Admin only."""
+    if g.user.role != "admin":
+        return jsonify({"error": "Only admins can upload files."}), 403
     if "file" not in request.files:
         return jsonify({"error": "No file uploaded."}), 400
 
@@ -721,7 +723,9 @@ def parse_file():
 @app.route("/api/quiz", methods=["POST"])
 @require_auth
 def create_quiz():
-    """Save a quiz for later retrieval."""
+    """Save a quiz from uploaded file questions. Admin only."""
+    if g.user.role != "admin":
+        return jsonify({"error": "Only admins can create quizzes from uploads."}), 403
     body = request.get_json(silent=True)
     if not body:
         return jsonify({"error": "Request body must be JSON."}), 400
@@ -875,6 +879,158 @@ def create_quiz_from_bank():
         "created_at":     now.isoformat(),
         "question_count": len(ordered),
     }), 201
+
+
+@app.route("/api/question/<question_id>", methods=["PATCH"])
+@require_auth
+def update_question(question_id: str):
+    """Update a question's topic. Admin only."""
+    if g.user.role != "admin":
+        return jsonify({"error": "Admin access required."}), 403
+
+    body  = request.get_json(silent=True) or {}
+    topic = body.get("topic", "").strip() or None
+
+    with Session(_engine) as session:
+        q = session.execute(
+            select(Question)
+            .where(Question.id == question_id)
+            .where(Question.school_id == g.school_id)
+        ).scalar_one_or_none()
+
+        if q is None:
+            return jsonify({"error": "Question not found."}), 404
+
+        q.topic = topic
+        session.commit()
+
+    return jsonify({"id": question_id, "topic": topic})
+
+
+@app.route("/api/question/<question_id>/quizzes", methods=["GET"])
+@require_auth
+def get_question_quizzes(question_id: str):
+    """Return all quizzes that contain a specific question (school-scoped)."""
+    with Session(_engine) as session:
+        q = session.execute(
+            select(Question)
+            .where(Question.id == question_id)
+            .where(Question.school_id == g.school_id)
+        ).scalar_one_or_none()
+
+        if q is None:
+            return jsonify({"error": "Question not found."}), 404
+
+        rows = session.execute(
+            select(Quiz)
+            .join(QuizQuestion, QuizQuestion.quiz_id == Quiz.id)
+            .where(QuizQuestion.question_id == question_id)
+            .where(Quiz.school_id == g.school_id)
+            .order_by(Quiz.title)
+        ).scalars().all()
+
+    return jsonify({
+        "quizzes": [{"id": r.id, "title": r.title} for r in rows]
+    })
+
+
+@app.route("/api/question/<question_id>/quiz/<quiz_id>", methods=["DELETE"])
+@require_auth
+def remove_question_from_quiz(question_id: str, quiz_id: str):
+    """Remove a question from a specific quiz. Admin only."""
+    if g.user.role != "admin":
+        return jsonify({"error": "Admin access required."}), 403
+
+    with Session(_engine) as session:
+        # Verify quiz belongs to this school
+        quiz = session.execute(
+            select(Quiz)
+            .where(Quiz.id == quiz_id)
+            .where(Quiz.school_id == g.school_id)
+        ).scalar_one_or_none()
+
+        if quiz is None:
+            return jsonify({"error": "Quiz not found."}), 404
+
+        qq = session.execute(
+            select(QuizQuestion)
+            .where(QuizQuestion.quiz_id == quiz_id)
+            .where(QuizQuestion.question_id == question_id)
+        ).scalar_one_or_none()
+
+        if qq is None:
+            return jsonify({"error": "Question is not in this quiz."}), 404
+
+        session.delete(qq)
+        session.commit()
+
+    return jsonify({"message": "Question removed from quiz."})
+
+
+@app.route("/api/question/<question_id>", methods=["DELETE"])
+@require_auth
+def delete_question(question_id: str):
+    """
+    Delete a question permanently. Admin only.
+    Blocked if the question is still linked to any quiz — caller must
+    remove it from all quizzes first via DELETE /api/question/<id>/quiz/<quiz_id>.
+    """
+    if g.user.role != "admin":
+        return jsonify({"error": "Admin access required."}), 403
+
+    with Session(_engine) as session:
+        q = session.execute(
+            select(Question)
+            .where(Question.id == question_id)
+            .where(Question.school_id == g.school_id)
+        ).scalar_one_or_none()
+
+        if q is None:
+            return jsonify({"error": "Question not found."}), 404
+
+        quiz_count = session.execute(
+            select(func.count()).where(QuizQuestion.question_id == question_id)
+        ).scalar()
+
+        if quiz_count > 0:
+            return jsonify({
+                "error": f"Question is still in {quiz_count} quiz(es). Remove it from all quizzes first.",
+                "quiz_count": quiz_count,
+            }), 409
+
+        session.delete(q)
+        session.commit()
+
+    log.info("Deleted question %s school=%s", question_id, g.school_id)
+    return jsonify({"message": "Question deleted."})
+
+
+@app.route("/api/quiz/<quiz_id>", methods=["DELETE"])
+@require_auth
+def delete_quiz(quiz_id: str):
+    """
+    Delete a quiz. Admin only.
+    Questions in the bank are NOT deleted — only the quiz and its
+    quiz_questions join rows (CASCADE handles those automatically).
+    """
+    if g.user.role != "admin":
+        return jsonify({"error": "Admin access required."}), 403
+
+    with Session(_engine) as session:
+        quiz = session.execute(
+            select(Quiz)
+            .where(Quiz.id == quiz_id)
+            .where(Quiz.school_id == g.school_id)
+        ).scalar_one_or_none()
+
+        if quiz is None:
+            return jsonify({"error": "Quiz not found."}), 404
+
+        session.delete(quiz)
+        session.commit()
+
+    log.info("Deleted quiz %s school=%s", quiz_id, g.school_id)
+    return jsonify({"message": "Quiz deleted."})
 
 
 # ─── Entry point ──────────────────────────────────────────────────────────────

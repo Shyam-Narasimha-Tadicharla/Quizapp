@@ -428,6 +428,32 @@
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: var(--border-hi); border-radius: 99px; }
 
+    /* ── Confirm / remove-from-quiz modal ── */
+    .modal-overlay {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,.6); z-index: 60;
+      align-items: center; justify-content: center;
+    }
+    .modal-overlay.open { display: flex; }
+    .modal-box {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 14px; padding: 1.75rem 1.5rem;
+      width: 100%; max-width: 440px;
+      display: flex; flex-direction: column; gap: 1rem;
+    }
+    .modal-title { font-size: 15px; font-weight: 600; }
+    .modal-body  { font-size: 13px; color: var(--ink-dim); line-height: 1.6; }
+    .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: .25rem; }
+    .quiz-check-item {
+      display: flex; align-items: center; gap: 10px;
+      padding: 8px 10px; border-radius: 7px;
+      border: 1px solid var(--border); cursor: pointer;
+      transition: border-color .15s, background .15s;
+    }
+    .quiz-check-item:hover { border-color: var(--border-hi); background: var(--surface-2); }
+    .quiz-check-item.checked { border-color: var(--accent); background: var(--accent-bg); }
+    .quiz-check-item input { accent-color: var(--accent); width: 15px; height: 15px; cursor: pointer; }
+
     /* ── Question bank ── */
     .bank-row {
       background: var(--surface);
@@ -783,6 +809,19 @@
   <div class="step"><div class="step-num">3</div><div class="step-text">Paste both snippets into any HTML page. The quiz renders automatically on load.</div></div>
 </div>
 
+<!-- ── Confirm / remove-from-quiz modal ── -->
+<div class="modal-overlay" id="generic-modal">
+  <div class="modal-box">
+    <div class="modal-title" id="modal-title">Confirm</div>
+    <div class="modal-body"  id="modal-body"></div>
+    <div id="modal-quiz-list" style="display:flex;flex-direction:column;gap:6px;max-height:240px;overflow-y:auto"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost btn-sm" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-sm" id="modal-confirm-btn" style="background:var(--red);border-color:var(--red);color:#fff" onclick="modalConfirm()">Confirm</button>
+    </div>
+  </div>
+</div>
+
 <!-- ── Create-from-bank modal ── -->
 <div class="drawer-overlay" id="bank-modal-overlay" onclick="closeBankModal()"></div>
 <div class="drawer" id="bank-modal" style="width:540px">
@@ -893,13 +932,16 @@ document.addEventListener('keydown', e => {
 
 function showApp() {
   document.getElementById('auth-screen').classList.remove('visible');
-  // Populate user chip
   if (_session && _session.user) {
     const u = _session.user;
     document.getElementById('user-chip').style.display = 'flex';
     document.getElementById('user-avatar').textContent = u.email[0].toUpperCase();
     document.getElementById('user-email-display').textContent = u.email;
     document.getElementById('user-role-display').textContent  = u.role || 'teacher';
+    // Hide upload panel for teachers
+    if (u.role !== 'admin') {
+      document.getElementById('nav-upload').style.display = 'none';
+    }
   }
   loadLibrary();
 }
@@ -1128,6 +1170,9 @@ async function loadLibrary() {
                   <button class="btn btn-sm btn-ghost embed-btn" data-id="${escHtml(q.id)}">
                     &lt;/&gt; Embed
                   </button>
+                  ${isAdmin() ? `<button class="btn btn-sm btn-ghost delete-quiz-btn" data-id="${escHtml(q.id)}" data-title="${escHtml(q.title)}" style="color:var(--red)">
+                    ✕ Delete
+                  </button>` : ''}
                 </div>
               </td>
             </tr>
@@ -1142,6 +1187,11 @@ async function loadLibrary() {
         const title = window._quizMeta[id] || 'Quiz';
         openDrawer(id, title);
       });
+    });
+
+    // Attach delete quiz listeners
+    body.querySelectorAll('.delete-quiz-btn').forEach(btn => {
+      btn.addEventListener('click', () => confirmDeleteQuiz(btn.dataset.id, btn.dataset.title));
     });
 
   } catch (err) {
@@ -1337,6 +1387,157 @@ function toast(msg, type = '') {
   setTimeout(() => el.remove(), 3200);
 }
 
+// ─── Role helpers ─────────────────────────────────────────────────────────────
+function isAdmin() {
+  return _session && _session.user && _session.user.role === 'admin';
+}
+
+// ─── Generic modal ────────────────────────────────────────────────────────────
+let _modalAction = null;
+
+function showModal(title, body, confirmLabel, confirmStyle, onConfirm, quizList = null) {
+  document.getElementById('modal-title').textContent       = title;
+  document.getElementById('modal-body').innerHTML          = body;
+  document.getElementById('modal-confirm-btn').textContent = confirmLabel;
+  document.getElementById('modal-confirm-btn').style.cssText =
+    `background:${confirmStyle};border-color:${confirmStyle};color:#fff`;
+
+  const listEl = document.getElementById('modal-quiz-list');
+  listEl.innerHTML = '';
+  if (quizList) {
+    quizList.forEach(q => {
+      const item = document.createElement('label');
+      item.className = 'quiz-check-item';
+      item.innerHTML = `<input type="checkbox" value="${q.id}" checked /> ${escHtml(q.title)}`;
+      item.querySelector('input').addEventListener('change', () =>
+        item.classList.toggle('checked', item.querySelector('input').checked)
+      );
+      item.classList.add('checked');
+      listEl.appendChild(item);
+    });
+  }
+
+  _modalAction = onConfirm;
+  document.getElementById('generic-modal').classList.add('open');
+}
+
+function closeModal() {
+  document.getElementById('generic-modal').classList.remove('open');
+  _modalAction = null;
+}
+
+function modalConfirm() {
+  if (_modalAction) _modalAction();
+}
+
+// ─── Delete quiz ──────────────────────────────────────────────────────────────
+function confirmDeleteQuiz(quizId, quizTitle) {
+  showModal(
+    'Delete quiz',
+    `<strong style="color:var(--ink)">"${escHtml(quizTitle)}"</strong> will be permanently deleted. Questions in the bank are not affected.`,
+    'Delete', 'var(--red)',
+    async () => {
+      closeModal();
+      try {
+        const res = await fetch(apiBase() + `/api/quiz/${quizId}`, {
+          method: 'DELETE', headers: authHeaders(),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error);
+        toast(`"${quizTitle}" deleted.`, 'ok');
+        loadLibrary();
+      } catch (err) { toast(err.message, 'err'); }
+    }
+  );
+}
+
+// ─── Edit topic ───────────────────────────────────────────────────────────────
+function openEditTopic(btn) {
+  const id  = btn.dataset.id;
+  const frm = document.getElementById(`etf-${id}`);
+  // close any other open forms first
+  document.querySelectorAll('.edit-topic-form').forEach(f => f.style.display = 'none');
+  frm.style.display = 'block';
+  document.getElementById(`eti-${id}`).focus();
+}
+
+function closeEditTopic(id) {
+  document.getElementById(`etf-${id}`).style.display = 'none';
+}
+
+async function saveTopic(questionId) {
+  const input = document.getElementById(`eti-${questionId}`);
+  const topic = input.value.trim() || null;
+  try {
+    const res  = await fetch(apiBase() + `/api/question/${questionId}`, {
+      method:  'PATCH',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body:    JSON.stringify({ topic }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    toast('Topic updated.', 'ok');
+    loadBank();
+  } catch (err) { toast(err.message, 'err'); }
+}
+
+// ─── Delete question ──────────────────────────────────────────────────────────
+async function handleDeleteQuestion(questionId) {
+  // First check which quizzes contain this question
+  try {
+    const res  = await fetch(apiBase() + `/api/question/${questionId}/quizzes`, {
+      headers: authHeaders(),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+
+    const quizzes = data.quizzes || [];
+
+    if (quizzes.length === 0) {
+      // Safe to delete — just confirm
+      showModal(
+        'Delete question',
+        'This question is not in any quiz. Delete it permanently from the bank?',
+        'Delete', 'var(--red)',
+        async () => {
+          closeModal();
+          try {
+            const r = await fetch(apiBase() + `/api/question/${questionId}`, {
+              method: 'DELETE', headers: authHeaders(),
+            });
+            const d = await r.json();
+            if (!r.ok) throw new Error(d.error);
+            toast('Question deleted.', 'ok');
+            loadBank();
+          } catch (err) { toast(err.message, 'err'); }
+        }
+      );
+    } else {
+      // Show removal panel — teacher selects which quizzes to remove from
+      showModal(
+        'Remove from quizzes first',
+        `This question is in <strong style="color:var(--ink)">${quizzes.length} quiz${quizzes.length > 1 ? 'zes' : ''}</strong>. Select which quizzes to remove it from. Once it's in no quizzes, you can delete it.`,
+        'Remove selected', 'var(--accent)',
+        async () => {
+          const checked = [...document.querySelectorAll('#modal-quiz-list input:checked')];
+          if (checked.length === 0) { toast('Select at least one quiz.', 'err'); return; }
+          closeModal();
+          try {
+            await Promise.all(checked.map(cb =>
+              fetch(apiBase() + `/api/question/${questionId}/quiz/${cb.value}`, {
+                method: 'DELETE', headers: authHeaders(),
+              })
+            ));
+            toast(`Removed from ${checked.length} quiz${checked.length > 1 ? 'zes' : ''}.`, 'ok');
+            loadBank();
+          } catch (err) { toast(err.message, 'err'); }
+        },
+        quizzes
+      );
+    }
+  } catch (err) { toast(err.message, 'err'); }
+}
+
 // ─── Question Bank ────────────────────────────────────────────────────────────
 let _bankQuestions = [];      // all questions loaded for current filter
 let _selectedIds   = new Set(); // IDs selected for quiz creation
@@ -1383,13 +1584,38 @@ async function loadBank() {
       grouped[t].push(q);
     });
 
+    const adminControls = isAdmin();
     body.innerHTML = `<div style="padding:1rem;display:flex;flex-direction:column;gap:6px">` +
       Object.entries(grouped).map(([topic, qs]) => `
         <div class="bank-topic-header">${escHtml(topic)} <span style="font-weight:400;color:var(--ink-faint)">(${qs.length})</span></div>
         ${qs.map(q => `
-          <div class="bank-row" data-id="${q.id}" onclick="toggleBankRow(this)">
-            <div class="bank-row-text">${escHtml(q.text)}</div>
-            <div class="bank-row-opts">${q.options.map((o,i) => `${['A','B','C','D','E'][i]}) ${escHtml(o)}`).join(' · ')}</div>
+          <div class="bank-row" data-id="${q.id}">
+            <div style="display:flex;align-items:flex-start;gap:8px">
+              <div style="flex:1">
+                <div class="bank-row-text">${escHtml(q.text)}</div>
+                <div class="bank-row-opts">${q.options.map((o,i) => `${['A','B','C','D','E'][i]}) ${escHtml(o)}`).join(' · ')}</div>
+              </div>
+              ${adminControls ? `
+              <div style="display:flex;gap:4px;flex-shrink:0;margin-top:2px">
+                <button class="btn btn-sm btn-ghost edit-topic-btn" data-id="${q.id}" data-topic="${escHtml(q.topic||'')}"
+                  style="font-size:11px;padding:3px 8px" onclick="event.stopPropagation();openEditTopic(this)">
+                  ✏ Topic
+                </button>
+                <button class="btn btn-sm btn-ghost delete-q-btn" data-id="${q.id}"
+                  style="font-size:11px;padding:3px 8px;color:var(--red)" onclick="event.stopPropagation();handleDeleteQuestion('${q.id}')">
+                  ✕
+                </button>
+              </div>` : ''}
+            </div>
+            <div class="edit-topic-form" id="etf-${q.id}" style="display:none;margin-top:8px;display:none">
+              <div style="display:flex;gap:6px;align-items:center">
+                <input class="api-url-input" id="eti-${q.id}" value="${escHtml(q.topic||'')}"
+                  placeholder="Topic name (blank to clear)"
+                  style="flex:1;padding:6px 9px;font-size:12.5px" />
+                <button class="btn btn-sm btn-primary" onclick="event.stopPropagation();saveTopic('${q.id}')">Save</button>
+                <button class="btn btn-sm btn-ghost" onclick="event.stopPropagation();closeEditTopic('${q.id}')">✕</button>
+              </div>
+            </div>
           </div>
         `).join('')}
       `).join('') + `</div>`;
