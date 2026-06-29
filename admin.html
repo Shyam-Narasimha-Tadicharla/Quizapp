@@ -427,9 +427,145 @@
     ::-webkit-scrollbar { width: 6px; height: 6px; }
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: var(--border-hi); border-radius: 99px; }
+
+    /* ── Auth screen ── */
+    .auth-screen {
+      display: none;
+      position: fixed; inset: 0;
+      background: #0f0f13;
+      z-index: 200;
+      align-items: center; justify-content: center;
+    }
+    .auth-screen.visible { display: flex; }
+    .auth-box {
+      width: 100%; max-width: 400px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 2.5rem 2rem;
+      display: flex; flex-direction: column; gap: 1.25rem;
+    }
+    .auth-logo {
+      display: flex; align-items: center; gap: 10px;
+      margin-bottom: .25rem;
+    }
+    .auth-logo-mark {
+      width: 34px; height: 34px;
+      background: var(--accent); border-radius: 9px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 17px; font-weight: 700; color: #fff;
+    }
+    .auth-logo-text { font-size: 16px; font-weight: 700; color: var(--ink); }
+    .auth-tagline { font-size: 13px; color: var(--ink-dim); }
+    .auth-tabs {
+      display: flex; gap: 0;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 8px; padding: 3px;
+    }
+    .auth-tab {
+      flex: 1; text-align: center;
+      padding: 7px; font-size: 13px; font-weight: 500;
+      border-radius: 6px; cursor: pointer;
+      color: var(--ink-dim); transition: all .15s;
+    }
+    .auth-tab.active { background: var(--surface-3); color: var(--ink); }
+    .auth-field { display: flex; flex-direction: column; gap: 5px; }
+    .auth-field label { font-size: 12px; font-weight: 500; color: var(--ink-dim); }
+    .auth-input {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      padding: 9px 12px;
+      font-size: 14px; color: var(--ink);
+      outline: none; width: 100%;
+      transition: border-color .15s;
+    }
+    .auth-input:focus { border-color: var(--accent); }
+    .auth-input::placeholder { color: var(--ink-faint); }
+    .auth-error {
+      font-size: 13px; color: var(--red);
+      background: var(--red-bg);
+      border: 1px solid var(--red);
+      border-radius: 7px; padding: 8px 12px;
+      display: none;
+    }
+    .auth-error.visible { display: block; }
+    .auth-submit {
+      width: 100%; justify-content: center;
+      padding: 10px; font-size: 14px;
+    }
+    .auth-switch { font-size: 12.5px; color: var(--ink-dim); text-align: center; }
+    .auth-switch span { color: var(--accent); cursor: pointer; }
+    .auth-switch span:hover { color: var(--accent-hi); }
+
+    /* ── User chip in sidebar footer ── */
+    .user-chip {
+      display: flex; align-items: center; gap: 8px;
+      padding: .75rem 1.25rem;
+      margin-bottom: .5rem;
+    }
+    .user-avatar {
+      width: 28px; height: 28px; border-radius: 50%;
+      background: var(--accent-bg); border: 1px solid var(--accent);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 12px; font-weight: 700; color: var(--accent-hi);
+      flex-shrink: 0;
+    }
+    .user-info { flex: 1; min-width: 0; }
+    .user-email { font-size: 11.5px; color: var(--ink); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .user-role  { font-size: 10.5px; color: var(--ink-dim); }
+    .logout-btn {
+      background: none; border: none;
+      color: var(--ink-dim); font-size: 15px;
+      cursor: pointer; padding: 2px 4px; border-radius: 4px;
+      transition: color .15s;
+    }
+    .logout-btn:hover { color: var(--red); }
   </style>
 </head>
 <body>
+
+<!-- ── Auth screen ── -->
+<div class="auth-screen" id="auth-screen">
+  <div class="auth-box">
+    <div>
+      <div class="auth-logo">
+        <div class="auth-logo-mark">Q</div>
+        <div class="auth-logo-text">QuizEngine</div>
+      </div>
+      <div class="auth-tagline">Sign in to manage your school's quizzes</div>
+    </div>
+
+    <div class="auth-tabs">
+      <div class="auth-tab active" id="tab-login"  onclick="switchAuthTab('login')">Sign in</div>
+      <div class="auth-tab"        id="tab-signup" onclick="switchAuthTab('signup')">Create account</div>
+    </div>
+
+    <div class="auth-field">
+      <label for="auth-email">Email</label>
+      <input class="auth-input" type="email" id="auth-email" placeholder="you@school.edu" autocomplete="email" />
+    </div>
+    <div class="auth-field">
+      <label for="auth-password">Password</label>
+      <input class="auth-input" type="password" id="auth-password" placeholder="••••••••" autocomplete="current-password" />
+    </div>
+    <div class="auth-field" id="school-field" style="display:none">
+      <label for="auth-school">School name</label>
+      <input class="auth-input" type="text" id="auth-school" placeholder="e.g. Greenwood High School" />
+    </div>
+
+    <div class="auth-error" id="auth-error"></div>
+
+    <button class="btn btn-primary auth-submit" id="auth-submit-btn" onclick="submitAuth()">
+      Sign in
+    </button>
+
+    <div class="auth-switch" id="auth-switch">
+      Don't have an account? <span onclick="switchAuthTab('signup')">Create one</span>
+    </div>
+  </div>
+</div>
 
 <div class="shell">
 
@@ -452,6 +588,14 @@
     </div>
 
     <div class="sidebar-footer">
+      <div class="user-chip" id="user-chip" style="display:none">
+        <div class="user-avatar" id="user-avatar">?</div>
+        <div class="user-info">
+          <div class="user-email" id="user-email-display">—</div>
+          <div class="user-role"  id="user-role-display">—</div>
+        </div>
+        <button class="logout-btn" onclick="logout()" title="Sign out">⏻</button>
+      </div>
       <div class="api-url-label">Backend URL</div>
       <input class="api-url-input" id="api-url" value="" placeholder="(same origin)" oninput="saveApiUrl()" />
     </div>
@@ -620,6 +764,139 @@ function saveApiUrl() {
   if (saved && !saved.includes('localhost')) document.getElementById('api-url').value = saved;
 })();
 
+// ─── Auth state ───────────────────────────────────────────────────────────────
+let _session = null;  // { access_token, user: { id, email, school_id, role } }
+
+function getToken()    { return _session ? _session.access_token : null; }
+function authHeaders() {
+  const t = getToken();
+  return t ? { 'Authorization': 'Bearer ' + t, 'Content-Type': 'application/json' } : {};
+}
+
+function saveSession(data) {
+  _session = data;
+  localStorage.setItem('qe-session', JSON.stringify(data));
+}
+function clearSession() {
+  _session = null;
+  localStorage.removeItem('qe-session');
+}
+function loadSession() {
+  try {
+    const raw = localStorage.getItem('qe-session');
+    if (raw) _session = JSON.parse(raw);
+  } catch { _session = null; }
+}
+
+// ─── Auth UI ──────────────────────────────────────────────────────────────────
+let _authTab = 'login';
+
+function switchAuthTab(tab) {
+  _authTab = tab;
+  document.getElementById('tab-login').classList.toggle('active',  tab === 'login');
+  document.getElementById('tab-signup').classList.toggle('active', tab === 'signup');
+  document.getElementById('school-field').style.display = tab === 'signup' ? '' : 'none';
+  document.getElementById('auth-submit-btn').textContent = tab === 'login' ? 'Sign in' : 'Create account';
+  document.getElementById('auth-switch').innerHTML = tab === 'login'
+    ? 'Don\'t have an account? <span onclick="switchAuthTab(\'signup\')">Create one</span>'
+    : 'Already have an account? <span onclick="switchAuthTab(\'login\')">Sign in</span>';
+  document.getElementById('auth-error').classList.remove('visible');
+  document.getElementById('auth-password').autocomplete = tab === 'login' ? 'current-password' : 'new-password';
+}
+
+function showAuthError(msg) {
+  const el = document.getElementById('auth-error');
+  el.textContent = msg;
+  el.classList.add('visible');
+}
+
+async function submitAuth() {
+  const email    = document.getElementById('auth-email').value.trim();
+  const password = document.getElementById('auth-password').value;
+  const school   = document.getElementById('auth-school').value.trim();
+  const btn      = document.getElementById('auth-submit-btn');
+
+  document.getElementById('auth-error').classList.remove('visible');
+
+  if (!email || !password) { showAuthError('Email and password are required.'); return; }
+  if (_authTab === 'signup' && !school) { showAuthError('School name is required.'); return; }
+
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>';
+
+  try {
+    const endpoint = _authTab === 'login' ? '/api/auth/login' : '/api/auth/signup';
+    const body     = _authTab === 'login'
+      ? { email, password }
+      : { email, password, school_name: school };
+
+    const res  = await fetch(apiBase() + endpoint, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(body),
+    });
+    const data = await res.json();
+
+    if (!res.ok) { showAuthError(data.error || 'Something went wrong.'); return; }
+
+    if (_authTab === 'signup') {
+      showAuthError('');
+      document.getElementById('auth-error').style.color = 'var(--green)';
+      document.getElementById('auth-error').textContent = data.message || 'Account created! Check your email then sign in.';
+      document.getElementById('auth-error').classList.add('visible');
+      switchAuthTab('login');
+      return;
+    }
+
+    saveSession(data);
+    showApp();
+
+  } catch (err) {
+    showAuthError('Network error. Is the backend reachable?');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = _authTab === 'login' ? 'Sign in' : 'Create account';
+  }
+}
+
+// Allow Enter key to submit auth form
+document.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && document.getElementById('auth-screen').classList.contains('visible')) {
+    submitAuth();
+  }
+});
+
+function showApp() {
+  document.getElementById('auth-screen').classList.remove('visible');
+  // Populate user chip
+  if (_session && _session.user) {
+    const u = _session.user;
+    document.getElementById('user-chip').style.display = 'flex';
+    document.getElementById('user-avatar').textContent = u.email[0].toUpperCase();
+    document.getElementById('user-email-display').textContent = u.email;
+    document.getElementById('user-role-display').textContent  = u.role || 'teacher';
+  }
+  loadLibrary();
+}
+
+function showLogin() {
+  document.getElementById('auth-screen').classList.add('visible');
+  document.getElementById('user-chip').style.display = 'none';
+}
+
+function logout() {
+  clearSession();
+  showLogin();
+}
+
+// ─── Boot ─────────────────────────────────────────────────────────────────────
+loadSession();
+if (_session && _session.access_token) {
+  showApp();
+} else {
+  showLogin();
+}
+
 // ─── State ────────────────────────────────────────────────────────────────────
 let selectedFile   = null;
 let parsedData     = null;   // { title, questions }
@@ -688,7 +965,12 @@ async function parseFile() {
   form.append('title', selectedFile.name.replace(/\.[^.]+$/, ''));
 
   try {
-    const res  = await fetch(apiBase() + '/api/parse', { method: 'POST', body: form });
+    const token = getToken();
+    const res  = await fetch(apiBase() + '/api/parse', {
+      method: 'POST',
+      headers: token ? { 'Authorization': 'Bearer ' + token } : {},
+      body: form,
+    });
     const data = await res.json();
 
     if (!res.ok) throw new Error(data.error || 'Parse failed.');
@@ -741,7 +1023,7 @@ async function saveQuiz() {
   try {
     const res  = await fetch(apiBase() + '/api/quiz', {
       method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body:    JSON.stringify({
         title,
         questions:       parsedData.questions,
@@ -770,7 +1052,9 @@ async function loadLibrary() {
   body.innerHTML = `<div class="card-body" style="text-align:center;padding:2rem;color:var(--ink-dim)"><span class="spinner" style="border-color:rgba(255,255,255,.1);border-top-color:var(--accent)"></span></div>`;
 
   try {
-    const res  = await fetch(apiBase() + '/api/quizzes');
+    const res  = await fetch(apiBase() + '/api/quizzes', {
+      headers: authHeaders(),
+    });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Could not load quizzes.');
 
@@ -836,6 +1120,17 @@ async function loadLibrary() {
   } catch (err) {
     body.innerHTML = `<div class="card-body" style="color:var(--red);font-size:13px">${err.message}</div>`;
   }
+}
+
+// Handle expired sessions globally
+async function apiFetch(url, opts = {}) {
+  const res = await fetch(url, opts);
+  if (res.status === 401) {
+    clearSession();
+    showLogin();
+    throw new Error('Session expired. Please sign in again.');
+  }
+  return res;
 }
 
 // ─── Embed drawer ─────────────────────────────────────────────────────────────

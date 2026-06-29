@@ -5,35 +5,44 @@ Flask server that accepts PDF / TXT file uploads,
 extracts Q&A text, parses it into structured questions,
 and stores quizzes for retrieval by ID.
 
-Routes
-  POST /api/parse          Upload a file → parsed questions JSON
-  POST /api/quiz           Save a quiz   → quiz ID
-  GET  /api/quiz/<id>      Fetch a quiz by ID
-  GET  /api/quizzes        List all saved quizzes
-  GET  /api/health         Health check
+Public routes (no auth required)
+  GET  /api/health              Health check
+  GET  /api/quiz/<id>           Fetch a quiz by ID (used by embedded widget)
+  GET  /preview/<id>            Serve preview page
+
+Auth routes
+  POST /api/auth/signup         Register a new school + admin account
+  POST /api/auth/login          Exchange email+password for JWT (via Supabase)
+
+Protected routes (JWT required)
+  POST /api/parse               Upload a file → parsed questions JSON
+  POST /api/quiz                Save a quiz   → quiz ID
+  GET  /api/quizzes             List quizzes for the authenticated school
 """
 
 import os
 import re
 import uuid
 import logging
+import functools
 from datetime import datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
-load_dotenv()  # loads .env for local dev; no-op in production where env vars are set directly
+load_dotenv()
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, g
 from flask_cors import CORS
 import fitz  # PyMuPDF
-from sqlalchemy import create_engine, select, func
+import jwt as pyjwt
+from sqlalchemy import create_engine, select, func, text
 from sqlalchemy.orm import Session
-from models import Quiz, Question, QuizQuestion
+from models import School, User, Quiz, Question, QuizQuestion
 
 # ─── App setup ────────────────────────────────────────────────────────────────
 
 app = Flask(__name__)
-CORS(app)  # allow requests from any origin (restrict in production)
+CORS(app, supports_credentials=True)
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -41,16 +50,7 @@ log = logging.getLogger(__name__)
 ALLOWED_EXTENSIONS = {"pdf", "txt"}
 MAX_FILE_BYTES     = 10 * 1024 * 1024  # 10 MB
 
-
 # ─── Database setup ───────────────────────────────────────────────────────────
-#
-# pool_pre_ping: before handing out a connection, ping with SELECT 1.
-#   Catches connections silently dropped by PgBouncer's idle timeout.
-# pool_recycle=300: replace connections older than 5 min proactively,
-#   before PgBouncer drops them (its default idle timeout is ~10 min).
-# pool_size=1 / max_overflow=0: each Vercel serverless invocation is its
-#   own process — there is nothing to share between requests, so one
-#   connection is the right pool size.
 
 _engine = create_engine(
     os.environ["DATABASE_URL"],
@@ -60,6 +60,81 @@ _engine = create_engine(
     max_overflow=0,
 )
 
+# ─── Auth helpers ─────────────────────────────────────────────────────────────
+#
+# Supabase signs JWTs with a project-specific secret (the JWT Secret from
+# Project Settings → API). We verify the signature locally — no round-trip
+# to Supabase on every request.
+
+SUPABASE_URL      = os.environ.get("SUPABASE_URL", "")
+SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY", "")
+
+# JWKS cache — fetched once per process, refreshed on key-not-found errors.
+_jwks_client: pyjwt.PyJWKClient | None = None
+
+
+def _get_jwks_client() -> pyjwt.PyJWKClient:
+    global _jwks_client
+    if _jwks_client is None:
+        jwks_url = f"{SUPABASE_URL}/auth/v1/.well-known/jwks.json"
+        _jwks_client = pyjwt.PyJWKClient(jwks_url, cache_keys=True)
+    return _jwks_client
+
+
+def _verify_jwt(token: str) -> dict:
+    """
+    Verify a Supabase JWT using their JWKS endpoint (ECC P-256 / ES256).
+    Raises jwt.InvalidTokenError on failure.
+    """
+    client = _get_jwks_client()
+    signing_key = client.get_signing_key_from_jwt(token)
+    return pyjwt.decode(
+        token,
+        signing_key.key,
+        algorithms=["ES256", "RS256", "HS256"],  # accept any Supabase-issued algorithm
+        audience="authenticated",
+        leeway=30,  # tolerate up to 30s clock skew between Supabase and server
+    )
+
+
+def require_auth(f):
+    """
+    Decorator: extract and verify the Bearer JWT, then load the User row.
+    Populates g.user (User ORM object) and g.school_id (str).
+    Returns 401 if missing/invalid, 403 if user not found in our users table.
+    """
+    @functools.wraps(f)
+    def wrapper(*args, **kwargs):
+        auth_header = request.headers.get("Authorization", "")
+        if not auth_header.startswith("Bearer "):
+            return jsonify({"error": "Missing or invalid Authorization header."}), 401
+
+        token = auth_header[len("Bearer "):]
+        try:
+            payload = _verify_jwt(token)
+        except pyjwt.ExpiredSignatureError:
+            return jsonify({"error": "Session expired. Please log in again."}), 401
+        except pyjwt.InvalidTokenError as exc:
+            return jsonify({"error": f"Invalid token: {exc}"}), 401
+
+        auth_id = payload.get("sub")
+        if not auth_id:
+            return jsonify({"error": "Token missing subject claim."}), 401
+
+        with Session(_engine) as session:
+            user = session.execute(
+                select(User).where(User.auth_id == auth_id)
+            ).scalar_one_or_none()
+
+        if user is None:
+            return jsonify({"error": "Account not found. Contact your administrator."}), 403
+
+        g.user      = user
+        g.school_id = user.school_id
+        g.user_id   = user.id
+        return f(*args, **kwargs)
+    return wrapper
+
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -68,17 +143,13 @@ def allowed_file(filename: str) -> bool:
 
 
 def extract_text_from_pdf(file_bytes: bytes) -> str:
-    """Extract plain text from a PDF using PyMuPDF."""
-    doc  = fitz.open(stream=file_bytes, filetype="pdf")
-    pages = []
-    for page in doc:
-        pages.append(page.get_text("text"))
+    doc   = fitz.open(stream=file_bytes, filetype="pdf")
+    pages = [page.get_text("text") for page in doc]
     doc.close()
     return "\n\n".join(pages)
 
 
 def extract_text_from_txt(file_bytes: bytes) -> str:
-    """Decode a plain-text upload."""
     for encoding in ("utf-8", "latin-1", "cp1252"):
         try:
             return file_bytes.decode(encoding)
@@ -105,9 +176,7 @@ def parse_questions(raw: str) -> list[dict]:
     """
     OPT_MAP = {"A": 0, "B": 1, "C": 2, "D": 3, "E": 4}
 
-    # Split into blocks separated by one or more blank lines
     blocks = [b.strip() for b in re.split(r"\n\s*\n", raw.strip()) if b.strip()]
-
     if not blocks:
         raise ValueError("No question blocks found in the file.")
 
@@ -116,12 +185,10 @@ def parse_questions(raw: str) -> list[dict]:
     for idx, block in enumerate(blocks, start=1):
         lines = [l.strip() for l in block.splitlines() if l.strip()]
 
-        # ── Extract each part ──
-        q_line   = next((l for l in lines if re.match(r"^Q:", l, re.I)), None)
+        q_line    = next((l for l in lines if re.match(r"^Q:", l, re.I)), None)
         opt_lines = [l for l in lines if re.match(r"^[A-Ea-e]\)", l)]
-        c_line   = next((l for l in lines if re.match(r"^Correct:", l, re.I)), None)
+        c_line    = next((l for l in lines if re.match(r"^Correct:", l, re.I)), None)
 
-        # ── Validate ──
         if not q_line:
             raise ValueError(f"Block {idx}: missing 'Q:' line.")
         if len(opt_lines) < 2:
@@ -129,7 +196,7 @@ def parse_questions(raw: str) -> list[dict]:
         if not c_line:
             raise ValueError(f"Block {idx}: missing 'Correct:' line.")
 
-        letter = re.sub(r"^Correct:\s*", "", c_line, flags=re.I).strip().upper()
+        letter      = re.sub(r"^Correct:\s*", "", c_line, flags=re.I).strip().upper()
         correct_idx = OPT_MAP.get(letter)
 
         if correct_idx is None:
@@ -146,21 +213,21 @@ def parse_questions(raw: str) -> list[dict]:
     return questions
 
 
-def save_quiz(title: str, questions: list[dict], source_filename: str = "") -> dict:
+def save_quiz(title: str, questions: list[dict], source_filename: str,
+              school_id: str, user_id: str) -> dict:
     """
-    Persist a quiz and its questions to PostgreSQL.
-
-    Incoming questions use the legacy API field names {q, opts, correct}.
-    These are translated to DB column names {text, options, correct_index}
-    on the way in. The returned dict uses the legacy names so the API
-    response shape is unchanged.
+    Persist a quiz and its questions scoped to a school.
+    Incoming questions use legacy API names {q, opts, correct};
+    these are translated to DB names {text, options, correct_index}.
     """
-    quiz_id  = str(uuid.uuid4())
-    now      = datetime.now(timezone.utc)
+    quiz_id = str(uuid.uuid4())
+    now     = datetime.now(timezone.utc)
 
     with Session(_engine) as session:
         quiz = Quiz(
             id              = quiz_id,
+            school_id       = school_id,
+            created_by      = user_id,
             title           = title or "Untitled Quiz",
             source_filename = source_filename,
             created_at      = now,
@@ -170,6 +237,7 @@ def save_quiz(title: str, questions: list[dict], source_filename: str = "") -> d
         for position, q in enumerate(questions):
             question = Question(
                 id            = str(uuid.uuid4()),
+                school_id     = school_id,
                 text          = q["q"],
                 options       = q["opts"],
                 correct_index = q["correct"],
@@ -183,7 +251,7 @@ def save_quiz(title: str, questions: list[dict], source_filename: str = "") -> d
 
         session.commit()
 
-    log.info("Saved quiz %s (%d questions)", quiz_id, len(questions))
+    log.info("Saved quiz %s (%d questions) for school %s", quiz_id, len(questions), school_id)
 
     return {
         "id":              quiz_id,
@@ -197,11 +265,8 @@ def save_quiz(title: str, questions: list[dict], source_filename: str = "") -> d
 
 def load_quiz(quiz_id: str) -> dict | None:
     """
-    Load a quiz and its questions by ID.
-
-    Translates DB column names back to legacy API field names so the
-    GET /api/quiz/<id> response is identical to what the frontend expects.
-    Questions are returned in insertion order via the position column.
+    Load a quiz by ID. No school scoping here — the embed widget needs
+    to fetch quizzes by ID without being logged in.
     """
     with Session(_engine) as session:
         quiz = session.get(Quiz, quiz_id)
@@ -231,12 +296,9 @@ def load_quiz(quiz_id: str) -> dict | None:
         }
 
 
-def list_quizzes() -> list[dict]:
+def list_quizzes(school_id: str) -> list[dict]:
     """
-    Return metadata (no questions) for all quizzes, newest first.
-
-    Uses a COUNT subquery so this is always a single SQL query regardless
-    of how many quizzes exist — no N+1 problem.
+    Return metadata for all quizzes belonging to a school, newest first.
     """
     with Session(_engine) as session:
         count_subq = (
@@ -250,6 +312,7 @@ def list_quizzes() -> list[dict]:
         stmt = (
             select(Quiz, count_subq.c.question_count)
             .outerjoin(count_subq, count_subq.c.quiz_id == Quiz.id)
+            .where(Quiz.school_id == school_id)
             .order_by(Quiz.created_at.desc())
         )
         rows = session.execute(stmt).all()
@@ -266,7 +329,7 @@ def list_quizzes() -> list[dict]:
         ]
 
 
-# ─── Routes ───────────────────────────────────────────────────────────────────
+# ─── Routes — Public ──────────────────────────────────────────────────────────
 
 @app.route("/", methods=["GET"])
 def index():
@@ -279,157 +342,26 @@ def health():
     return jsonify({"status": "ok", "service": "QuizEngine Backend"})
 
 
-@app.route("/api/parse", methods=["POST"])
-def parse_file():
-    """
-    Upload a PDF or TXT file → receive parsed questions.
-
-    Form fields:
-      file   (required) — the uploaded file
-      title  (optional) — quiz title
-
-    Returns 200:
-      { questions: [...], question_count: N, title: str }
-    """
-    if "file" not in request.files:
-        return jsonify({"error": "No file uploaded. Send the file in a 'file' form field."}), 400
-
-    f = request.files["file"]
-    if not f.filename:
-        return jsonify({"error": "Filename is empty."}), 400
-    if not allowed_file(f.filename):
-        return jsonify({"error": f"Unsupported file type. Allowed: {', '.join(ALLOWED_EXTENSIONS)}"}), 415
-
-    file_bytes = f.read()
-    if len(file_bytes) > MAX_FILE_BYTES:
-        return jsonify({"error": "File exceeds 10 MB limit."}), 413
-
-    ext = f.filename.rsplit(".", 1)[1].lower()
-
-    # ── Extract text ──
-    try:
-        if ext == "pdf":
-            raw_text = extract_text_from_pdf(file_bytes)
-        else:
-            raw_text = extract_text_from_txt(file_bytes)
-    except Exception as exc:
-        log.exception("Text extraction failed")
-        return jsonify({"error": f"Could not extract text from file: {exc}"}), 422
-
-    if not raw_text.strip():
-        return jsonify({"error": "The file appears to be empty or contains no extractable text."}), 422
-
-    # ── Parse questions ──
-    try:
-        questions = parse_questions(raw_text)
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 422
-
-    title = request.form.get("title", "").strip() or f.filename.rsplit(".", 1)[0]
-
-    return jsonify({
-        "title":          title,
-        "questions":      questions,
-        "question_count": len(questions),
-    })
-
-
-@app.route("/api/quiz", methods=["POST"])
-def create_quiz():
-    """
-    Save a quiz for later retrieval.
-
-    JSON body:
-      { title: str, questions: [...], source_filename?: str }
-
-    Returns 201:
-      { id, title, created_at, question_count }
-    """
-    body = request.get_json(silent=True)
-    if not body:
-        return jsonify({"error": "Request body must be JSON."}), 400
-
-    questions = body.get("questions")
-    if not isinstance(questions, list) or len(questions) == 0:
-        return jsonify({"error": "'questions' must be a non-empty array."}), 400
-
-    # Light validation of question shape
-    for i, q in enumerate(questions):
-        if not isinstance(q.get("q"), str) or not q["q"].strip():
-            return jsonify({"error": f"Question {i+1}: 'q' field is missing or empty."}), 400
-        if not isinstance(q.get("opts"), list) or len(q["opts"]) < 2:
-            return jsonify({"error": f"Question {i+1}: 'opts' must have at least 2 items."}), 400
-        if not isinstance(q.get("correct"), int) or q["correct"] >= len(q["opts"]):
-            return jsonify({"error": f"Question {i+1}: 'correct' index is out of range."}), 400
-
-    record = save_quiz(
-        title           = body.get("title", ""),
-        questions       = questions,
-        source_filename = body.get("source_filename", ""),
-    )
-
-    return jsonify({
-        "id":             record["id"],
-        "title":          record["title"],
-        "created_at":     record["created_at"],
-        "question_count": record["question_count"],
-    }), 201
-
-
 @app.route("/api/quiz/<quiz_id>", methods=["GET"])
 def get_quiz(quiz_id: str):
-    """
-    Fetch a saved quiz (including full questions) by ID.
-    """
-    # Basic sanitisation — UUIDs are hex + hyphens only
+    """Public — used by the embedded widget."""
     if not re.match(r"^[0-9a-f\-]{36}$", quiz_id):
         return jsonify({"error": "Invalid quiz ID."}), 400
-
     record = load_quiz(quiz_id)
     if record is None:
         return jsonify({"error": f"Quiz '{quiz_id}' not found."}), 404
-
     return jsonify(record)
-
-
-@app.route("/api/quizzes", methods=["GET"])
-def get_quizzes():
-    """
-    List all saved quizzes (metadata only, no questions).
-    """
-    return jsonify({"quizzes": list_quizzes()})
-
-
-@app.route("/static/quiz-engine.js", methods=["GET"])
-def serve_engine():
-    """
-    Serve quiz-engine.js so the preview page can load it.
-    Place quiz-engine.js in the same folder as app.py.
-    """
-    engine_path = Path(__file__).parent / "quiz-engine.js"
-    if not engine_path.exists():
-        return "quiz-engine.js not found. Place it in the same folder as app.py.", 404
-    return engine_path.read_text(encoding="utf-8"), 200, {
-        "Content-Type": "application/javascript",
-        "Access-Control-Allow-Origin": "*",
-    }
 
 
 @app.route("/preview/<quiz_id>", methods=["GET"])
 def preview_quiz(quiz_id: str):
-    """
-    Serve a fully working quiz page for a given quiz ID.
-    Opens in the browser — no embed needed.
-    """
     if not re.match(r"^[0-9a-f\-]{36}$", quiz_id):
         return "Invalid quiz ID.", 400
-
     record = load_quiz(quiz_id)
     if record is None:
         return f"Quiz '{quiz_id}' not found.", 404
 
     title = record["title"]
-
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -484,8 +416,238 @@ def preview_quiz(quiz_id: str):
 </script>
 </body>
 </html>"""
-
     return html, 200, {"Content-Type": "text/html"}
+
+
+@app.route("/static/quiz-engine.js", methods=["GET"])
+def serve_engine():
+    engine_path = Path(__file__).parent / "quiz-engine.js"
+    if not engine_path.exists():
+        return "quiz-engine.js not found.", 404
+    return engine_path.read_text(encoding="utf-8"), 200, {
+        "Content-Type": "application/javascript",
+        "Access-Control-Allow-Origin": "*",
+    }
+
+
+# ─── Routes — Auth ────────────────────────────────────────────────────────────
+
+@app.route("/api/auth/signup", methods=["POST"])
+def signup():
+    """
+    Register a new school and its first admin user.
+
+    JSON body: { email, password, school_name }
+
+    Flow:
+      1. Create Supabase auth user via REST API
+      2. Insert school row
+      3. Insert user row linking auth_id → school
+    """
+    import urllib.request
+    import urllib.error
+    import json as _json
+
+    body = request.get_json(silent=True) or {}
+    email       = (body.get("email") or "").strip().lower()
+    password    = body.get("password") or ""
+    school_name = (body.get("school_name") or "").strip()
+
+    if not email or not password or not school_name:
+        return jsonify({"error": "email, password, and school_name are required."}), 400
+    if len(password) < 8:
+        return jsonify({"error": "Password must be at least 8 characters."}), 400
+
+    # 1. Create Supabase auth user
+    supabase_signup_url = f"{SUPABASE_URL}/auth/v1/signup"
+    req_data = _json.dumps({"email": email, "password": password}).encode()
+    req = urllib.request.Request(
+        supabase_signup_url,
+        data    = req_data,
+        method  = "POST",
+        headers = {
+            "Content-Type": "application/json",
+            "apikey":       SUPABASE_ANON_KEY,
+        },
+    )
+    try:
+        with urllib.request.urlopen(req) as resp:
+            auth_data = _json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        err_body = _json.loads(exc.read())
+        return jsonify({"error": err_body.get("msg") or err_body.get("message") or "Signup failed."}), 400
+
+    auth_id = auth_data.get("user", {}).get("id")
+    if not auth_id:
+        return jsonify({"error": "Supabase did not return a user ID."}), 500
+
+    # 2 & 3. Create school + user rows
+    school_id = str(uuid.uuid4())
+    user_id   = str(uuid.uuid4())
+    now       = datetime.now(timezone.utc)
+
+    with Session(_engine) as session:
+        session.add(School(id=school_id, name=school_name, created_at=now))
+        session.add(User(
+            id         = user_id,
+            auth_id    = auth_id,
+            school_id  = school_id,
+            role       = "admin",
+            created_at = now,
+        ))
+        session.commit()
+
+    log.info("New school created: %s (%s) by %s", school_name, school_id, email)
+    return jsonify({"message": "Account created. Check your email to confirm before logging in."}), 201
+
+
+@app.route("/api/auth/login", methods=["POST"])
+def login():
+    """
+    Exchange email + password for a Supabase JWT.
+
+    JSON body: { email, password }
+    Returns:   { access_token, user: { id, email, school_id, role } }
+    """
+    import urllib.request
+    import urllib.error
+    import json as _json
+
+    body     = request.get_json(silent=True) or {}
+    email    = (body.get("email") or "").strip().lower()
+    password = body.get("password") or ""
+
+    if not email or not password:
+        return jsonify({"error": "email and password are required."}), 400
+
+    supabase_login_url = f"{SUPABASE_URL}/auth/v1/token?grant_type=password"
+    req_data = _json.dumps({"email": email, "password": password}).encode()
+    req = urllib.request.Request(
+        supabase_login_url,
+        data    = req_data,
+        method  = "POST",
+        headers = {
+            "Content-Type": "application/json",
+            "apikey":       SUPABASE_ANON_KEY,
+        },
+    )
+    try:
+        with urllib.request.urlopen(req) as resp:
+            auth_data = _json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        err_body = _json.loads(exc.read())
+        return jsonify({"error": err_body.get("error_description") or "Invalid email or password."}), 401
+
+    access_token = auth_data.get("access_token")
+    auth_id      = auth_data.get("user", {}).get("id")
+
+    if not access_token or not auth_id:
+        return jsonify({"error": "Unexpected response from auth service."}), 500
+
+    with Session(_engine) as session:
+        user = session.execute(
+            select(User).where(User.auth_id == auth_id)
+        ).scalar_one_or_none()
+
+    if user is None:
+        return jsonify({"error": "Account not found. Contact your administrator."}), 403
+
+    return jsonify({
+        "access_token": access_token,
+        "user": {
+            "id":        user.id,
+            "email":     email,
+            "school_id": user.school_id,
+            "role":      user.role,
+        },
+    })
+
+
+# ─── Routes — Protected ───────────────────────────────────────────────────────
+
+@app.route("/api/parse", methods=["POST"])
+@require_auth
+def parse_file():
+    """Upload a PDF or TXT file → receive parsed questions."""
+    if "file" not in request.files:
+        return jsonify({"error": "No file uploaded."}), 400
+
+    f = request.files["file"]
+    if not f.filename:
+        return jsonify({"error": "Filename is empty."}), 400
+    if not allowed_file(f.filename):
+        return jsonify({"error": f"Unsupported file type. Allowed: {', '.join(ALLOWED_EXTENSIONS)}"}), 415
+
+    file_bytes = f.read()
+    if len(file_bytes) > MAX_FILE_BYTES:
+        return jsonify({"error": "File exceeds 10 MB limit."}), 413
+
+    ext = f.filename.rsplit(".", 1)[1].lower()
+
+    try:
+        raw_text = extract_text_from_pdf(file_bytes) if ext == "pdf" else extract_text_from_txt(file_bytes)
+    except Exception as exc:
+        log.exception("Text extraction failed")
+        return jsonify({"error": f"Could not extract text: {exc}"}), 422
+
+    if not raw_text.strip():
+        return jsonify({"error": "The file appears to be empty."}), 422
+
+    try:
+        questions = parse_questions(raw_text)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 422
+
+    title = request.form.get("title", "").strip() or f.filename.rsplit(".", 1)[0]
+
+    return jsonify({
+        "title":          title,
+        "questions":      questions,
+        "question_count": len(questions),
+    })
+
+
+@app.route("/api/quiz", methods=["POST"])
+@require_auth
+def create_quiz():
+    """Save a quiz for later retrieval."""
+    body = request.get_json(silent=True)
+    if not body:
+        return jsonify({"error": "Request body must be JSON."}), 400
+
+    questions = body.get("questions")
+    if not isinstance(questions, list) or len(questions) == 0:
+        return jsonify({"error": "'questions' must be a non-empty array."}), 400
+
+    for i, q in enumerate(questions):
+        if not isinstance(q.get("q"), str) or not q["q"].strip():
+            return jsonify({"error": f"Question {i+1}: 'q' field is missing or empty."}), 400
+        if not isinstance(q.get("opts"), list) or len(q["opts"]) < 2:
+            return jsonify({"error": f"Question {i+1}: 'opts' must have at least 2 items."}), 400
+        if not isinstance(q.get("correct"), int) or q["correct"] >= len(q["opts"]):
+            return jsonify({"error": f"Question {i+1}: 'correct' index is out of range."}), 400
+
+    record = save_quiz(
+        title           = body.get("title", ""),
+        questions       = questions,
+        source_filename = body.get("source_filename", ""),
+        school_id       = g.school_id,
+        user_id         = g.user_id,
+    )
+
+    return jsonify({
+        "id":             record["id"],
+        "title":          record["title"],
+        "created_at":     record["created_at"],
+        "question_count": record["question_count"],
+    }), 201
+
+
+@app.route("/api/quizzes", methods=["GET"])
+@require_auth
+def get_quizzes():
+    """List all quizzes for the authenticated school."""
+    return jsonify({"quizzes": list_quizzes(g.school_id)})
 
 
 # ─── Entry point ──────────────────────────────────────────────────────────────

@@ -1,8 +1,8 @@
 """
-SQLAlchemy 2.0 ORM models — Phase 1 schema.
+SQLAlchemy 2.0 ORM models — Phase 2 schema.
 
-Tables built now:   schools, quizzes, questions, quiz_questions
-Tables deferred:    users (Phase 2), topics (Phase 3), results/answers (Phase 6)
+Tables built now:   schools, quizzes, questions, quiz_questions, users
+Tables deferred:    topics (Phase 3), results/answers (Phase 6)
 
 Column names follow the ROADMAP spec (text / options / correct_index).
 The app layer translates between the legacy API names (q / opts / correct)
@@ -38,12 +38,6 @@ def _now() -> datetime:
 
 
 class School(Base):
-    """
-    Added in Phase 1 so the FK column exists before Phase 2 needs it.
-    No multi-tenancy logic is wired yet — school_id on quizzes and questions
-    is nullable, and Phase 1 inserts never set it.
-    Phase 2 will backfill and add NOT NULL via a migration.
-    """
     __tablename__ = "schools"
 
     id         = Column(UUID(as_uuid=False), primary_key=True, default=_uuid)
@@ -52,18 +46,34 @@ class School(Base):
 
     quizzes   = relationship("Quiz",     back_populates="school")
     questions = relationship("Question", back_populates="school")
+    users     = relationship("User",     back_populates="school")
+
+
+class User(Base):
+    """
+    Maps a Supabase Auth user (auth_id = their sub claim UUID) to a school.
+    role is either 'admin' or 'teacher'. One user belongs to exactly one school.
+    """
+    __tablename__ = "users"
+
+    id         = Column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    auth_id    = Column(UUID(as_uuid=False), nullable=False, unique=True)  # Supabase auth.users.id
+    school_id  = Column(UUID(as_uuid=False), ForeignKey("schools.id"), nullable=False)
+    role       = Column(String(20), nullable=False, default="teacher")     # 'admin' | 'teacher'
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_now)
+
+    school = relationship("School", back_populates="users")
 
 
 class Quiz(Base):
     __tablename__ = "quizzes"
 
     id              = Column(UUID(as_uuid=False), primary_key=True, default=_uuid)
-    school_id       = Column(UUID(as_uuid=False), ForeignKey("schools.id"), nullable=True)
+    school_id       = Column(UUID(as_uuid=False), ForeignKey("schools.id"), nullable=False)
+    created_by      = Column(UUID(as_uuid=False), ForeignKey("users.id"),   nullable=False)
     title           = Column(String(500), nullable=False)
     source_filename = Column(String(500), nullable=False, server_default="")
     created_at      = Column(DateTime(timezone=True), nullable=False, default=_now)
-
-    # created_by deferred to Phase 2 (requires users table)
 
     school         = relationship("School", back_populates="quizzes")
     quiz_questions = relationship(
@@ -78,7 +88,7 @@ class Question(Base):
     __tablename__ = "questions"
 
     id            = Column(UUID(as_uuid=False), primary_key=True, default=_uuid)
-    school_id     = Column(UUID(as_uuid=False), ForeignKey("schools.id"), nullable=True)
+    school_id     = Column(UUID(as_uuid=False), ForeignKey("schools.id"), nullable=False)
     text          = Column(Text, nullable=False)
     options       = Column(ARRAY(Text), nullable=False)  # ["Stack", "Queue", ...]
     correct_index = Column(Integer, nullable=False)       # 0-based index into options
