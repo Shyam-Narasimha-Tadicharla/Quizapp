@@ -479,6 +479,61 @@
       margin-bottom: 4px;
     }
 
+    /* ── Team panel ── */
+    .team-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
+    @media (max-width: 900px) { .team-grid { grid-template-columns: 1fr; } }
+    .team-section-title {
+      font-size: 13px; font-weight: 600; color: var(--ink);
+      margin-bottom: .75rem; display: flex; align-items: center; gap: 8px;
+    }
+    .subject-card {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: .9rem 1rem;
+      margin-bottom: 8px;
+    }
+    .subject-card-head {
+      display: flex; align-items: center; gap: 8px; margin-bottom: 6px;
+    }
+    .subject-name { font-size: 14px; font-weight: 600; color: var(--ink); flex: 1; }
+    .subject-pill {
+      font-size: 11px; padding: 2px 9px; border-radius: 99px;
+      background: var(--accent-bg); color: var(--accent-hi); font-weight: 500;
+    }
+    .subject-topics {
+      display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 6px;
+    }
+    .topic-tag {
+      font-size: 11.5px; padding: 3px 10px; border-radius: 99px;
+      background: var(--surface-3); color: var(--ink-dim);
+      border: 1px solid var(--border);
+    }
+    .subject-teachers { font-size: 12px; color: var(--ink-dim); }
+    .teacher-row {
+      display: flex; align-items: center; gap: 10px;
+      padding: 8px 10px; border-radius: 7px;
+      border: 1px solid var(--border);
+      background: var(--surface-2);
+      margin-bottom: 6px;
+    }
+    .teacher-avatar {
+      width: 26px; height: 26px; border-radius: 50%;
+      background: var(--accent-bg); border: 1px solid var(--accent);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 11px; font-weight: 700; color: var(--accent-hi);
+      flex-shrink: 0;
+    }
+    .teacher-email { font-size: 13px; color: var(--ink); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .teacher-role  { font-size: 11px; color: var(--ink-dim); }
+    .inline-form { display: flex; gap: 6px; align-items: center; margin-top: 8px; }
+    .inline-input {
+      flex: 1; background: var(--surface-2); border: 1px solid var(--border);
+      border-radius: 6px; padding: 6px 9px; font-size: 13px; color: var(--ink);
+      outline: none; font-family: inherit;
+    }
+    .inline-input:focus { border-color: var(--accent); }
+
     /* ── Auth screen ── */
     .auth-screen {
       display: none;
@@ -618,6 +673,9 @@
     <div class="nav-item" onclick="showPanel('bank')" id="nav-bank">
       <span class="nav-icon">🗄</span> Question Bank
       <span class="nav-count" id="bank-count">—</span>
+    </div>
+    <div class="nav-item" onclick="showPanel('team')" id="nav-team" style="display:none">
+      <span class="nav-icon">👥</span> Team
     </div>
 
     <div class="sidebar-footer">
@@ -761,6 +819,39 @@
       </div>
 
     </div><!-- /panel-bank -->
+
+    <!-- ═══════════════════════════════════════
+         PANEL 5 — Team (admin only)
+    ═══════════════════════════════════════ -->
+    <div class="panel" id="panel-team">
+
+      <div class="team-grid">
+
+        <!-- Left: Subjects -->
+        <div>
+          <div class="team-section-title">
+            Subjects
+            <button class="btn btn-sm btn-primary" onclick="openAddSubject()" style="margin-left:auto">+ New subject</button>
+          </div>
+          <div id="team-subjects-body">
+            <div style="color:var(--ink-dim);font-size:13px">Loading…</div>
+          </div>
+        </div>
+
+        <!-- Right: Teachers -->
+        <div>
+          <div class="team-section-title">
+            Teachers &amp; Admins
+            <button class="btn btn-sm btn-primary" onclick="openAddTeacher()" style="margin-left:auto">+ Invite</button>
+          </div>
+          <div id="team-teachers-body">
+            <div style="color:var(--ink-dim);font-size:13px">Loading…</div>
+          </div>
+        </div>
+
+      </div>
+
+    </div><!-- /panel-team -->
 
   </div><!-- /main -->
 </div><!-- /shell -->
@@ -938,8 +1029,9 @@ function showApp() {
     document.getElementById('user-avatar').textContent = u.email[0].toUpperCase();
     document.getElementById('user-email-display').textContent = u.email;
     document.getElementById('user-role-display').textContent  = u.role || 'teacher';
-    // Hide upload panel for teachers
-    if (u.role !== 'admin') {
+    if (u.role === 'admin') {
+      document.getElementById('nav-team').style.display = '';
+    } else {
       document.getElementById('nav-upload').style.display = 'none';
     }
   }
@@ -975,18 +1067,22 @@ const PANELS = {
   preview: { title: 'Preview & Save',   sub: 'Check the extracted questions before saving' },
   library: { title: 'Quiz Library',     sub: 'All saved quizzes' },
   bank:    { title: 'Question Bank',    sub: 'All questions across all quizzes' },
+  team:    { title: 'Team',             sub: 'Manage subjects, teachers and access' },
 };
 
 function showPanel(name) {
   document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   document.getElementById('panel-' + name).classList.add('active');
-  document.getElementById('nav-' + (name === 'preview' ? 'upload' : name)).classList.add('active');
+  const navId = name === 'preview' ? 'upload' : name;
+  const navEl = document.getElementById('nav-' + navId);
+  if (navEl) navEl.classList.add('active');
   document.getElementById('topbar-title').textContent = PANELS[name].title;
   document.getElementById('topbar-sub').textContent   = PANELS[name].sub;
   document.getElementById('topbar-actions').innerHTML = '';
   if (name === 'library') { loadLibrary(); }
   if (name === 'bank')    { loadBank(); }
+  if (name === 'team')    { loadTeam(); }
 }
 
 // ─── Upload zone ──────────────────────────────────────────────────────────────
@@ -1705,6 +1801,252 @@ async function saveFromBank() {
 
 // Load library on initial page open
 loadLibrary();
+
+// ─── Team panel ───────────────────────────────────────────────────────────────
+let _subjects = [];
+let _teamTeachers = [];
+
+async function loadTeam() {
+  document.getElementById('team-subjects-body').innerHTML  = '<div style="color:var(--ink-dim);font-size:13px">Loading…</div>';
+  document.getElementById('team-teachers-body').innerHTML = '<div style="color:var(--ink-dim);font-size:13px">Loading…</div>';
+
+  try {
+    const [sRes, tRes] = await Promise.all([
+      fetch(apiBase() + '/api/subjects',  { headers: authHeaders() }),
+      fetch(apiBase() + '/api/teachers',  { headers: authHeaders() }),
+    ]);
+    if (sRes.status === 401 || tRes.status === 401) { clearSession(); showLogin(); return; }
+
+    const sData = await sRes.json();
+    const tData = await tRes.json();
+
+    _subjects     = sData.subjects  || [];
+    _teamTeachers = tData.teachers  || [];
+
+    renderSubjects();
+    renderTeachers();
+  } catch (err) {
+    document.getElementById('team-subjects-body').innerHTML  = `<div style="color:var(--red);font-size:13px">${err.message}</div>`;
+    document.getElementById('team-teachers-body').innerHTML = `<div style="color:var(--red);font-size:13px">${err.message}</div>`;
+  }
+}
+
+function renderSubjects() {
+  const el = document.getElementById('team-subjects-body');
+  if (_subjects.length === 0) {
+    el.innerHTML = '<div style="color:var(--ink-dim);font-size:13px;padding:.5rem 0">No subjects yet. Create one to group topics and assign teachers.</div>';
+    return;
+  }
+  el.innerHTML = _subjects.map(s => `
+    <div class="subject-card">
+      <div class="subject-card-head">
+        <div class="subject-name">${escHtml(s.name)}</div>
+        <span class="subject-pill">${s.topics.length} topic${s.topics.length !== 1 ? 's' : ''}</span>
+        <button class="btn btn-sm btn-ghost" onclick="openEditSubject('${s.id}')" style="font-size:11px;padding:3px 8px">✏ Edit</button>
+        <button class="btn btn-sm btn-ghost" onclick="confirmDeleteSubject('${s.id}','${escHtml(s.name)}')" style="font-size:11px;padding:3px 8px;color:var(--red)">✕</button>
+      </div>
+      <div class="subject-topics">
+        ${s.topics.length === 0
+          ? '<span style="font-size:12px;color:var(--ink-faint)">No topics assigned</span>'
+          : s.topics.map(t => `<span class="topic-tag">${escHtml(t)}</span>`).join('')}
+      </div>
+      <div class="subject-teachers">
+        ${s.teachers.length === 0
+          ? 'No teachers assigned'
+          : s.teachers.map(t => `<span style="color:var(--ink)">${escHtml(t.email || t.id)}</span>`).join(', ')}
+      </div>
+    </div>
+  `).join('');
+}
+
+function renderTeachers() {
+  const el = document.getElementById('team-teachers-body');
+  if (_teamTeachers.length === 0) {
+    el.innerHTML = '<div style="color:var(--ink-dim);font-size:13px;padding:.5rem 0">No team members yet.</div>';
+    return;
+  }
+  const myId = _session && _session.user ? _session.user.id : null;
+  el.innerHTML = _teamTeachers.map(t => `
+    <div class="teacher-row">
+      <div class="teacher-avatar">${(t.email || '?')[0].toUpperCase()}</div>
+      <div style="flex:1;min-width:0">
+        <div class="teacher-email">${escHtml(t.email || '(no email)')}</div>
+        <div class="teacher-role">${t.role}${t.subject_ids && t.subject_ids.length ? ' · ' + t.subject_ids.length + ' subject(s)' : ''}</div>
+      </div>
+      ${t.id !== myId ? `<button class="btn btn-sm btn-ghost" onclick="confirmDeleteTeacher('${t.id}','${escHtml(t.email||t.id)}')" style="color:var(--red);font-size:11px;padding:3px 8px">Remove</button>` : '<span style="font-size:11px;color:var(--ink-faint)">you</span>'}
+    </div>
+  `).join('');
+}
+
+// Add subject modal (reuse generic modal)
+function openAddSubject() {
+  document.getElementById('modal-title').textContent  = 'New subject';
+  document.getElementById('modal-body').innerHTML     =
+    '<div style="margin-bottom:8px;font-size:13px;color:var(--ink-dim)">Subject name (e.g. Mathematics, Sciences)</div>' +
+    '<input class="inline-input" id="new-subject-name" placeholder="Subject name" style="width:100%" />';
+  document.getElementById('modal-quiz-list').innerHTML = '';
+  document.getElementById('modal-confirm-btn').textContent = 'Create';
+  document.getElementById('modal-confirm-btn').style.cssText = 'background:var(--accent);border-color:var(--accent);color:#fff';
+  _modalAction = async () => {
+    const name = (document.getElementById('new-subject-name').value || '').trim();
+    if (!name) { toast('Subject name is required.', 'err'); return; }
+    closeModal();
+    try {
+      const res  = await fetch(apiBase() + '/api/subjects', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ name }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      toast(`Subject "${name}" created.`, 'ok');
+      loadTeam();
+    } catch (err) { toast(err.message, 'err'); }
+  };
+  document.getElementById('generic-modal').classList.add('open');
+  setTimeout(() => document.getElementById('new-subject-name').focus(), 50);
+}
+
+// Edit subject — assign topics and teachers
+function openEditSubject(subjectId) {
+  const subj = _subjects.find(s => s.id === subjectId);
+  if (!subj) return;
+
+  // Build list of all known topics from question bank
+  const allTopics = [...new Set(_bankQuestions.map(q => q.topic).filter(Boolean))].sort();
+
+  document.getElementById('modal-title').textContent = `Edit "${subj.name}"`;
+  document.getElementById('modal-body').innerHTML =
+    `<div style="font-size:13px;font-weight:600;color:var(--ink);margin-bottom:6px">Topics</div>` +
+    `<div style="font-size:12px;color:var(--ink-dim);margin-bottom:8px">Select which topics belong to this subject</div>` +
+    `<div id="edit-topic-checks" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:1rem">` +
+    (allTopics.length === 0
+      ? '<span style="font-size:12px;color:var(--ink-faint)">No topics in bank yet. Upload questions first.</span>'
+      : allTopics.map(t => `
+          <label style="display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer;
+            padding:4px 10px;border-radius:99px;border:1px solid var(--border);background:var(--surface-3)">
+            <input type="checkbox" value="${escHtml(t)}" ${subj.topics.includes(t) ? 'checked' : ''} style="accent-color:var(--accent)"/>
+            ${escHtml(t)}
+          </label>`).join('')) +
+    `</div>` +
+    `<div style="font-size:13px;font-weight:600;color:var(--ink);margin-bottom:6px">Assigned teachers</div>` +
+    `<div id="edit-teacher-checks" style="display:flex;flex-direction:column;gap:5px">` +
+    (_teamTeachers.filter(t => t.role === 'teacher').length === 0
+      ? '<span style="font-size:12px;color:var(--ink-faint)">No teachers yet. Invite one first.</span>'
+      : _teamTeachers.filter(t => t.role === 'teacher').map(t => `
+          <label class="quiz-check-item ${subj.teachers.some(st => st.id === t.id) ? 'checked' : ''}">
+            <input type="checkbox" value="${t.id}" ${subj.teachers.some(st => st.id === t.id) ? 'checked' : ''} style="accent-color:var(--accent)"/>
+            ${escHtml(t.email || t.id)}
+          </label>`).join('')) +
+    `</div>`;
+
+  document.getElementById('modal-quiz-list').innerHTML = '';
+  document.getElementById('modal-confirm-btn').textContent = 'Save';
+  document.getElementById('modal-confirm-btn').style.cssText = 'background:var(--accent);border-color:var(--accent);color:#fff';
+
+  // Wire up checked state toggle on teacher checkboxes
+  setTimeout(() => {
+    document.querySelectorAll('#edit-teacher-checks .quiz-check-item input').forEach(cb => {
+      cb.addEventListener('change', () => cb.closest('.quiz-check-item').classList.toggle('checked', cb.checked));
+    });
+  }, 10);
+
+  _modalAction = async () => {
+    const topicChecks   = [...document.querySelectorAll('#edit-topic-checks input:checked')].map(c => c.value);
+    const teacherChecks = [...document.querySelectorAll('#edit-teacher-checks input:checked')].map(c => c.value);
+    closeModal();
+    try {
+      await Promise.all([
+        fetch(apiBase() + `/api/subjects/${subjectId}/topics`, {
+          method: 'PUT', headers: { 'Content-Type': 'application/json', ...authHeaders() },
+          body: JSON.stringify({ topics: topicChecks }),
+        }),
+        fetch(apiBase() + `/api/subjects/${subjectId}/teachers`, {
+          method: 'PUT', headers: { 'Content-Type': 'application/json', ...authHeaders() },
+          body: JSON.stringify({ user_ids: teacherChecks }),
+        }),
+      ]);
+      toast(`"${subj.name}" updated.`, 'ok');
+      loadTeam();
+    } catch (err) { toast(err.message, 'err'); }
+  };
+  document.getElementById('generic-modal').classList.add('open');
+}
+
+function confirmDeleteSubject(subjectId, subjectName) {
+  showModal(
+    'Delete subject',
+    `<strong style="color:var(--ink)">"${escHtml(subjectName)}"</strong> and all its topic/teacher assignments will be removed. Questions are not affected.`,
+    'Delete', 'var(--red)',
+    async () => {
+      closeModal();
+      try {
+        const res = await fetch(apiBase() + `/api/subjects/${subjectId}`, {
+          method: 'DELETE', headers: authHeaders(),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error);
+        toast(`"${subjectName}" deleted.`, 'ok');
+        loadTeam();
+      } catch (err) { toast(err.message, 'err'); }
+    }
+  );
+}
+
+// Invite teacher
+function openAddTeacher() {
+  document.getElementById('modal-title').textContent = 'Invite team member';
+  document.getElementById('modal-body').innerHTML =
+    '<div style="display:flex;flex-direction:column;gap:10px">' +
+    '<div><div style="font-size:12px;color:var(--ink-dim);margin-bottom:4px">Email</div>' +
+    '<input class="inline-input" id="inv-email" type="email" placeholder="teacher@school.edu" style="width:100%"/></div>' +
+    '<div><div style="font-size:12px;color:var(--ink-dim);margin-bottom:4px">Password (min 8 chars)</div>' +
+    '<input class="inline-input" id="inv-password" type="password" placeholder="••••••••" style="width:100%"/></div>' +
+    '<div><div style="font-size:12px;color:var(--ink-dim);margin-bottom:4px">Role</div>' +
+    '<select class="inline-input" id="inv-role" style="width:100%"><option value="teacher">Teacher</option><option value="admin">Admin</option></select></div>' +
+    '</div>';
+  document.getElementById('modal-quiz-list').innerHTML = '';
+  document.getElementById('modal-confirm-btn').textContent = 'Invite';
+  document.getElementById('modal-confirm-btn').style.cssText = 'background:var(--accent);border-color:var(--accent);color:#fff';
+  _modalAction = async () => {
+    const email    = (document.getElementById('inv-email').value    || '').trim();
+    const password = (document.getElementById('inv-password').value || '');
+    const role     = document.getElementById('inv-role').value;
+    if (!email || !password) { toast('Email and password are required.', 'err'); return; }
+    closeModal();
+    try {
+      const res  = await fetch(apiBase() + '/api/teachers', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ email, password, role }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      toast(`${email} added as ${role}.`, 'ok');
+      loadTeam();
+    } catch (err) { toast(err.message, 'err'); }
+  };
+  document.getElementById('generic-modal').classList.add('open');
+  setTimeout(() => document.getElementById('inv-email').focus(), 50);
+}
+
+function confirmDeleteTeacher(userId, email) {
+  showModal(
+    'Remove team member',
+    `<strong style="color:var(--ink)">${escHtml(email)}</strong> will be removed from this school. They can no longer log in.`,
+    'Remove', 'var(--red)',
+    async () => {
+      closeModal();
+      try {
+        const res = await fetch(apiBase() + `/api/teachers/${userId}`, {
+          method: 'DELETE', headers: authHeaders(),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error);
+        toast(`${email} removed.`, 'ok');
+        loadTeam();
+      } catch (err) { toast(err.message, 'err'); }
+    }
+  );
+}
 </script>
 </body>
 </html>

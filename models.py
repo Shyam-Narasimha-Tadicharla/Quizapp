@@ -1,7 +1,8 @@
 """
-SQLAlchemy 2.0 ORM models — Phase 3 schema.
+SQLAlchemy 2.0 ORM models — Phase 4 schema.
 
-Tables built now:   schools, quizzes, questions, quiz_questions, users
+Tables built now:   schools, quizzes, questions, quiz_questions, users,
+                    subjects, subject_topics, user_subjects
 Tables deferred:    results/answers (Phase 6)
 
 Column names follow the ROADMAP spec (text / options / correct_index).
@@ -47,6 +48,7 @@ class School(Base):
     quizzes   = relationship("Quiz",     back_populates="school")
     questions = relationship("Question", back_populates="school")
     users     = relationship("User",     back_populates="school")
+    subjects  = relationship("Subject",  back_populates="school")
 
 
 class User(Base):
@@ -58,11 +60,13 @@ class User(Base):
 
     id         = Column(UUID(as_uuid=False), primary_key=True, default=_uuid)
     auth_id    = Column(UUID(as_uuid=False), nullable=False, unique=True)  # Supabase auth.users.id
+    email      = Column(String(255), nullable=True)                        # stored for display; added Phase 4
     school_id  = Column(UUID(as_uuid=False), ForeignKey("schools.id"), nullable=False)
     role       = Column(String(20), nullable=False, default="teacher")     # 'admin' | 'teacher'
     created_at = Column(DateTime(timezone=True), nullable=False, default=_now)
 
-    school = relationship("School", back_populates="users")
+    school         = relationship("School",      back_populates="users")
+    subject_links  = relationship("UserSubject", back_populates="user", cascade="all, delete-orphan")
 
 
 class Quiz(Base):
@@ -119,3 +123,44 @@ class QuizQuestion(Base):
 
     quiz     = relationship("Quiz",     back_populates="quiz_questions")
     question = relationship("Question", back_populates="quiz_questions")
+
+
+# ── Phase 4: subjects ─────────────────────────────────────────────────────────
+
+class SubjectTopic(Base):
+    """Links a free-form topic string to a subject group."""
+    __tablename__ = "subject_topics"
+
+    subject_id = Column(UUID(as_uuid=False), ForeignKey("subjects.id", ondelete="CASCADE"), primary_key=True)
+    topic      = Column(String(255), primary_key=True)
+
+    subject = relationship("Subject", back_populates="topic_links")
+
+
+class UserSubject(Base):
+    """Assigns a subject to a user (teacher or admin)."""
+    __tablename__ = "user_subjects"
+
+    user_id    = Column(UUID(as_uuid=False), ForeignKey("users.id",    ondelete="CASCADE"), primary_key=True)
+    subject_id = Column(UUID(as_uuid=False), ForeignKey("subjects.id", ondelete="CASCADE"), primary_key=True)
+
+    user    = relationship("User",    back_populates="subject_links")
+    subject = relationship("Subject", back_populates="user_links")
+
+
+class Subject(Base):
+    """A named subject grouping (e.g. 'Mathematics') scoped to a school."""
+    __tablename__ = "subjects"
+
+    id         = Column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    school_id  = Column(UUID(as_uuid=False), ForeignKey("schools.id"), nullable=False)
+    name       = Column(String(255), nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_now)
+
+    __table_args__ = (
+        UniqueConstraint("school_id", "name", name="uq_subject_school_name"),
+    )
+
+    school      = relationship("School",       back_populates="subjects")
+    topic_links = relationship("SubjectTopic", back_populates="subject", cascade="all, delete-orphan")
+    user_links  = relationship("UserSubject",  back_populates="subject", cascade="all, delete-orphan")

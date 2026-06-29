@@ -37,7 +37,7 @@ import fitz  # PyMuPDF
 import jwt as pyjwt
 from sqlalchemy import create_engine, select, func, text
 from sqlalchemy.orm import Session
-from models import School, User, Quiz, Question, QuizQuestion
+from models import School, User, Quiz, Question, QuizQuestion, Subject, SubjectTopic, UserSubject
 
 # ─── App setup ────────────────────────────────────────────────────────────────
 
@@ -602,6 +602,7 @@ def setup_provision():
         session.add(User(
             id         = user_id,
             auth_id    = auth_id,
+            email      = email,
             school_id  = school_id,
             role       = "admin",
             created_at = now,
@@ -765,17 +766,42 @@ def get_quizzes():
     return jsonify({"quizzes": list_quizzes(g.school_id)})
 
 
+def _allowed_topics_for_user(session, user) -> list[str] | None:
+    """
+    Return the list of topics the user may see, or None if unrestricted.
+    Teachers with assigned subjects see only those subjects' topics.
+    Admins and teachers with no subject assignments see everything.
+    """
+    links = session.execute(
+        select(UserSubject).where(UserSubject.user_id == user.id)
+    ).scalars().all()
+
+    if not links:
+        return None  # unrestricted
+
+    subject_ids = [l.subject_id for l in links]
+    topic_rows = session.execute(
+        select(SubjectTopic.topic).where(SubjectTopic.subject_id.in_(subject_ids))
+    ).scalars().all()
+    return list(topic_rows)
+
+
 @app.route("/api/questions", methods=["GET"])
 @require_auth
 def get_questions():
     """
-    List all questions in the school's question bank.
-    Optional query param: ?topic=Algebra  — filters by topic.
+    List questions in the school's question bank.
+    Teachers with subject assignments only see their subjects' topics.
+    Optional query param: ?topic=Algebra  — additional filter by topic.
     """
     topic_filter = request.args.get("topic", "").strip() or None
 
     with Session(_engine) as session:
+        allowed = _allowed_topics_for_user(session, g.user)
+
         stmt = select(Question).where(Question.school_id == g.school_id)
+        if allowed is not None:
+            stmt = stmt.where(Question.topic.in_(allowed))
         if topic_filter:
             stmt = stmt.where(Question.topic == topic_filter)
         stmt = stmt.order_by(Question.topic.nulls_last(), Question.text)
@@ -798,15 +824,22 @@ def get_questions():
 @app.route("/api/topics", methods=["GET"])
 @require_auth
 def get_topics():
-    """List all distinct topics used by this school's questions, sorted."""
+    """
+    List distinct topics for this school's questions.
+    Teachers with subject assignments only see their subjects' topics.
+    """
     with Session(_engine) as session:
-        rows = session.execute(
+        allowed = _allowed_topics_for_user(session, g.user)
+
+        stmt = (
             select(Question.topic)
             .where(Question.school_id == g.school_id)
             .where(Question.topic.isnot(None))
-            .distinct()
-            .order_by(Question.topic)
-        ).scalars().all()
+        )
+        if allowed is not None:
+            stmt = stmt.where(Question.topic.in_(allowed))
+        stmt = stmt.distinct().order_by(Question.topic)
+        rows = session.execute(stmt).scalars().all()
 
     return jsonify({"topics": list(rows)})
 
@@ -1031,6 +1064,296 @@ def delete_quiz(quiz_id: str):
 
     log.info("Deleted quiz %s school=%s", quiz_id, g.school_id)
     return jsonify({"message": "Quiz deleted."})
+
+
+# ─── Routes — Phase 4: Subjects & Teachers ────────────────────────────────────
+
+@app.route("/api/subjects", methods=["GET"])
+@require_auth
+def list_subjects():
+    """List all subjects for this school, including their topics and assigned teachers."""
+    with Session(_engine) as session:
+        subjects = session.execute(
+            select(Subject).where(Subject.school_id == g.school_id).order_by(Subject.name)
+        ).scalars().all()
+
+        result = []
+        for subj in subjects:
+            topics = [st.topic for st in subj.topic_links]
+            teacher_ids = [ul.user_id for ul in subj.user_links]
+            teachers = []
+            if teacher_ids:
+                t_rows = session.execute(
+                    select(User).where(User.id.in_(teacher_ids))
+                ).scalars().all()
+                teachers = [{"id": t.id, "email": t.email, "role": t.role} for t in t_rows]
+            result.append({
+                "id":       subj.id,
+                "name":     subj.name,
+                "topics":   sorted(topics),
+                "teachers": teachers,
+            })
+
+    return jsonify({"subjects": result})
+
+
+@app.route("/api/subjects", methods=["POST"])
+@require_auth
+def create_subject():
+    """Create a new subject. Admin only."""
+    if g.user.role != "admin":
+        return jsonify({"error": "Admin access required."}), 403
+
+    body = request.get_json(silent=True) or {}
+    name = (body.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "'name' is required."}), 400
+
+    with Session(_engine) as session:
+        existing = session.execute(
+            select(Subject)
+            .where(Subject.school_id == g.school_id)
+            .where(Subject.name == name)
+        ).scalar_one_or_none()
+        if existing:
+            return jsonify({"error": f"Subject '{name}' already exists."}), 409
+
+        subj = Subject(
+            id        = str(uuid.uuid4()),
+            school_id = g.school_id,
+            name      = name,
+        )
+        session.add(subj)
+        session.commit()
+        subject_id = subj.id
+
+    log.info("Subject created: %s school=%s", name, g.school_id)
+    return jsonify({"id": subject_id, "name": name, "topics": [], "teachers": []}), 201
+
+
+@app.route("/api/subjects/<subject_id>", methods=["DELETE"])
+@require_auth
+def delete_subject(subject_id: str):
+    """Delete a subject and all its topic/user assignments. Admin only."""
+    if g.user.role != "admin":
+        return jsonify({"error": "Admin access required."}), 403
+
+    with Session(_engine) as session:
+        subj = session.execute(
+            select(Subject)
+            .where(Subject.id == subject_id)
+            .where(Subject.school_id == g.school_id)
+        ).scalar_one_or_none()
+
+        if subj is None:
+            return jsonify({"error": "Subject not found."}), 404
+
+        session.delete(subj)
+        session.commit()
+
+    return jsonify({"message": "Subject deleted."})
+
+
+@app.route("/api/subjects/<subject_id>/topics", methods=["PUT"])
+@require_auth
+def set_subject_topics(subject_id: str):
+    """
+    Replace all topic assignments for a subject.
+    Body: { topics: [str, ...] }
+    Admin only.
+    """
+    if g.user.role != "admin":
+        return jsonify({"error": "Admin access required."}), 403
+
+    body   = request.get_json(silent=True) or {}
+    topics = body.get("topics")
+    if not isinstance(topics, list):
+        return jsonify({"error": "'topics' must be an array."}), 400
+
+    topics = [t.strip() for t in topics if isinstance(t, str) and t.strip()]
+
+    with Session(_engine) as session:
+        subj = session.execute(
+            select(Subject)
+            .where(Subject.id == subject_id)
+            .where(Subject.school_id == g.school_id)
+        ).scalar_one_or_none()
+
+        if subj is None:
+            return jsonify({"error": "Subject not found."}), 404
+
+        # Replace: delete all existing, add new ones
+        session.execute(
+            SubjectTopic.__table__.delete().where(SubjectTopic.subject_id == subject_id)
+        )
+        for t in topics:
+            session.add(SubjectTopic(subject_id=subject_id, topic=t))
+
+        session.commit()
+
+    return jsonify({"id": subject_id, "topics": sorted(topics)})
+
+
+@app.route("/api/subjects/<subject_id>/teachers", methods=["PUT"])
+@require_auth
+def set_subject_teachers(subject_id: str):
+    """
+    Replace all teacher assignments for a subject.
+    Body: { user_ids: [uuid, ...] }
+    Admin only.
+    """
+    if g.user.role != "admin":
+        return jsonify({"error": "Admin access required."}), 403
+
+    body     = request.get_json(silent=True) or {}
+    user_ids = body.get("user_ids")
+    if not isinstance(user_ids, list):
+        return jsonify({"error": "'user_ids' must be an array."}), 400
+
+    with Session(_engine) as session:
+        subj = session.execute(
+            select(Subject)
+            .where(Subject.id == subject_id)
+            .where(Subject.school_id == g.school_id)
+        ).scalar_one_or_none()
+
+        if subj is None:
+            return jsonify({"error": "Subject not found."}), 404
+
+        # Verify all users belong to this school
+        if user_ids:
+            valid = session.execute(
+                select(User.id)
+                .where(User.id.in_(user_ids))
+                .where(User.school_id == g.school_id)
+            ).scalars().all()
+            invalid = set(user_ids) - set(valid)
+            if invalid:
+                return jsonify({"error": f"Users not found in this school: {list(invalid)}"}), 404
+
+        session.execute(
+            UserSubject.__table__.delete().where(UserSubject.subject_id == subject_id)
+        )
+        for uid in user_ids:
+            session.add(UserSubject(user_id=uid, subject_id=subject_id))
+
+        session.commit()
+
+    return jsonify({"id": subject_id, "user_ids": user_ids})
+
+
+@app.route("/api/teachers", methods=["GET"])
+@require_auth
+def list_teachers():
+    """List all teachers (and admins) in this school. Admin only."""
+    if g.user.role != "admin":
+        return jsonify({"error": "Admin access required."}), 403
+
+    with Session(_engine) as session:
+        users = session.execute(
+            select(User)
+            .where(User.school_id == g.school_id)
+            .order_by(User.created_at)
+        ).scalars().all()
+
+        result = []
+        for u in users:
+            subj_ids = [us.subject_id for us in u.subject_links]
+            result.append({
+                "id":          u.id,
+                "email":       u.email,
+                "role":        u.role,
+                "subject_ids": subj_ids,
+                "created_at":  u.created_at.isoformat(),
+            })
+
+    return jsonify({"teachers": result})
+
+
+@app.route("/api/teachers", methods=["POST"])
+@require_auth
+def invite_teacher():
+    """
+    Create a Supabase auth user and add them as a teacher in this school.
+    Body: { email, password, role: 'teacher'|'admin' }
+    Admin only.
+    """
+    import urllib.request
+    import urllib.error
+    import json as _json
+
+    if g.user.role != "admin":
+        return jsonify({"error": "Admin access required."}), 403
+
+    body     = request.get_json(silent=True) or {}
+    email    = (body.get("email") or "").strip().lower()
+    password = body.get("password") or ""
+    role     = (body.get("role") or "teacher").strip().lower()
+
+    if not email or not password:
+        return jsonify({"error": "email and password are required."}), 400
+    if len(password) < 8:
+        return jsonify({"error": "Password must be at least 8 characters."}), 400
+    if role not in ("teacher", "admin"):
+        return jsonify({"error": "role must be 'teacher' or 'admin'."}), 400
+
+    # Create Supabase auth user
+    req_data = _json.dumps({"email": email, "password": password}).encode()
+    req = urllib.request.Request(
+        f"{SUPABASE_URL}/auth/v1/signup",
+        data    = req_data,
+        method  = "POST",
+        headers = {"Content-Type": "application/json", "apikey": SUPABASE_ANON_KEY},
+    )
+    try:
+        with urllib.request.urlopen(req) as resp:
+            auth_data = _json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        err_body = _json.loads(exc.read())
+        return jsonify({"error": err_body.get("msg") or "Supabase signup failed."}), 400
+
+    auth_id = auth_data.get("user", {}).get("id")
+    if not auth_id:
+        return jsonify({"error": "Supabase did not return a user ID."}), 500
+
+    user_id = str(uuid.uuid4())
+    with Session(_engine) as session:
+        session.add(User(
+            id        = user_id,
+            auth_id   = auth_id,
+            email     = email,
+            school_id = g.school_id,
+            role      = role,
+        ))
+        session.commit()
+
+    log.info("Teacher invited: %s role=%s school=%s", email, role, g.school_id)
+    return jsonify({"id": user_id, "email": email, "role": role}), 201
+
+
+@app.route("/api/teachers/<user_id>", methods=["DELETE"])
+@require_auth
+def delete_teacher(user_id: str):
+    """Remove a teacher from this school. Admin only. Cannot delete yourself."""
+    if g.user.role != "admin":
+        return jsonify({"error": "Admin access required."}), 403
+    if user_id == g.user_id:
+        return jsonify({"error": "You cannot remove your own account."}), 400
+
+    with Session(_engine) as session:
+        user = session.execute(
+            select(User)
+            .where(User.id == user_id)
+            .where(User.school_id == g.school_id)
+        ).scalar_one_or_none()
+
+        if user is None:
+            return jsonify({"error": "Teacher not found."}), 404
+
+        session.delete(user)
+        session.commit()
+
+    return jsonify({"message": "Teacher removed."})
 
 
 # ─── Entry point ──────────────────────────────────────────────────────────────
