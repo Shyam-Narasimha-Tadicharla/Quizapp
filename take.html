@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>QuizEngine — Take a Quiz</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html { font-size: 15px; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #f4f4f8;
+      color: #1a1a2e;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2rem 1rem;
+    }
+    button { font-family: inherit; cursor: pointer; }
+    input, select { font-family: inherit; }
+
+    :root {
+      --accent:    #7b6ef6;
+      --accent-hi: #9d92ff;
+      --green:     #16a34a;
+      --green-bg:  #dcfce7;
+      --red:       #dc2626;
+      --red-bg:    #fee2e2;
+      --border:    #e2e2ec;
+      --surface:   #ffffff;
+      --ink-dim:   #6b7280;
+    }
+
+    .wrap { width: 100%; max-width: 620px; }
+
+    /* header */
+    .logo-bar {
+      display: flex; align-items: center; gap: 10px;
+      margin-bottom: 2rem;
+    }
+    .logo-mark {
+      width: 34px; height: 34px; border-radius: 9px;
+      background: var(--accent);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 17px; font-weight: 700; color: #fff;
+    }
+    .logo-text { font-size: 16px; font-weight: 700; color: #1a1a2e; }
+
+    /* card */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 2rem;
+      box-shadow: 0 2px 12px rgba(0,0,0,.06);
+    }
+    .card-title {
+      font-size: 18px; font-weight: 700; margin-bottom: .35rem;
+    }
+    .card-sub { font-size: 13px; color: var(--ink-dim); margin-bottom: 1.5rem; }
+
+    /* fields */
+    .field { margin-bottom: 1rem; }
+    .field label {
+      display: block; font-size: 12px; font-weight: 600;
+      color: var(--ink-dim); margin-bottom: 5px; text-transform: uppercase; letter-spacing: .04em;
+    }
+    .field input {
+      width: 100%; padding: 10px 12px;
+      border: 1.5px solid var(--border); border-radius: 8px;
+      font-size: 14px; color: #1a1a2e; outline: none;
+      transition: border-color .15s;
+      background: #fafafa;
+    }
+    .field input:focus { border-color: var(--accent); background: #fff; }
+
+    /* buttons */
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+      padding: 10px 20px; border-radius: 8px;
+      font-size: 14px; font-weight: 600;
+      border: none; cursor: pointer;
+      transition: opacity .15s, transform .1s;
+    }
+    .btn:active { transform: scale(.98); }
+    .btn:disabled { opacity: .45; cursor: not-allowed; transform: none; }
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-primary:hover:not(:disabled) { background: var(--accent-hi); }
+    .btn-full { width: 100%; }
+
+    .error-msg {
+      font-size: 13px; color: var(--red);
+      background: var(--red-bg);
+      border: 1px solid #fca5a5;
+      border-radius: 8px; padding: 9px 12px;
+      margin-bottom: 1rem; display: none;
+    }
+    .error-msg.show { display: block; }
+
+    /* spinner */
+    .spinner {
+      width: 16px; height: 16px;
+      border: 2px solid rgba(255,255,255,.3);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin .6s linear infinite; display: inline-block;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* quiz screen */
+    .quiz-header {
+      margin-bottom: 1.5rem;
+    }
+    .quiz-title { font-size: 20px; font-weight: 700; margin-bottom: 4px; }
+    .quiz-meta  { font-size: 13px; color: var(--ink-dim); }
+    .progress-bar-wrap {
+      height: 4px; background: var(--border); border-radius: 99px;
+      margin: 1rem 0; overflow: hidden;
+    }
+    .progress-bar {
+      height: 100%; background: var(--accent); border-radius: 99px;
+      transition: width .3s ease;
+    }
+
+    .question-block { margin-bottom: 1.5rem; }
+    .q-num {
+      font-size: 11px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .06em; color: var(--ink-dim); margin-bottom: 8px;
+    }
+    .q-text { font-size: 16px; font-weight: 500; line-height: 1.55; margin-bottom: 1rem; }
+
+    .options { display: flex; flex-direction: column; gap: 8px; }
+    .option {
+      display: flex; align-items: center; gap: 12px;
+      padding: 11px 14px; border-radius: 10px;
+      border: 1.5px solid var(--border);
+      cursor: pointer; transition: border-color .15s, background .15s;
+      font-size: 14px;
+    }
+    .option:hover { border-color: var(--accent); background: #f5f3ff; }
+    .option.selected { border-color: var(--accent); background: #ede9fe; }
+    .option.correct  { border-color: var(--green); background: var(--green-bg); }
+    .option.wrong    { border-color: var(--red);   background: var(--red-bg); }
+    .option input[type=radio] { accent-color: var(--accent); width: 16px; height: 16px; flex-shrink: 0; }
+    .opt-letter {
+      width: 26px; height: 26px; border-radius: 50%;
+      background: #f0f0f5; color: #555;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 12px; font-weight: 700; flex-shrink: 0;
+    }
+
+    .nav-row {
+      display: flex; gap: 8px; justify-content: space-between; margin-top: 1.5rem;
+    }
+
+    /* results screen */
+    .result-score {
+      text-align: center; padding: 1.5rem 0;
+    }
+    .score-circle {
+      width: 110px; height: 110px; border-radius: 50%;
+      border: 6px solid var(--accent);
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      margin: 0 auto 1rem;
+    }
+    .score-num  { font-size: 28px; font-weight: 800; color: var(--accent); }
+    .score-den  { font-size: 13px; color: var(--ink-dim); }
+    .score-pct  { font-size: 15px; font-weight: 600; margin-bottom: .25rem; }
+    .score-msg  { font-size: 13px; color: var(--ink-dim); }
+
+    .review-list { margin-top: 1.5rem; display: flex; flex-direction: column; gap: 10px; }
+    .review-item {
+      padding: 12px 14px; border-radius: 10px;
+      border: 1.5px solid var(--border); font-size: 13px;
+    }
+    .review-item.correct { border-color: var(--green); background: var(--green-bg); }
+    .review-item.wrong   { border-color: var(--red);   background: var(--red-bg); }
+    .review-q { font-weight: 600; margin-bottom: 4px; color: #1a1a2e; }
+    .review-a { color: var(--ink-dim); }
+
+    /* screen toggling */
+    .screen { display: none; }
+    .screen.active { display: block; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="logo-bar">
+    <div class="logo-mark">Q</div>
+    <div class="logo-text">QuizEngine</div>
+  </div>
+
+  <!-- ── Screen 1: Enter class name ── -->
+  <div class="screen active" id="screen-class">
+    <div class="card">
+      <div class="card-title">Join a Quiz</div>
+      <div class="card-sub">Enter the class code your teacher gave you</div>
+      <div class="error-msg" id="class-error"></div>
+      <div class="field">
+        <label>Class code</label>
+        <input type="text" id="class-input" placeholder="e.g. 10A" autocomplete="off" />
+      </div>
+      <button class="btn btn-primary btn-full" id="class-btn" onclick="lookupClass()">Continue →</button>
+    </div>
+  </div>
+
+  <!-- ── Screen 2: Enter student details ── -->
+  <div class="screen" id="screen-student">
+    <div class="card">
+      <div class="card-title" id="student-quiz-title">Quiz</div>
+      <div class="card-sub" id="student-quiz-sub"></div>
+      <div class="error-msg" id="student-error"></div>
+      <div class="field">
+        <label>Your full name</label>
+        <input type="text" id="student-name" placeholder="e.g. Rahul Sharma" autocomplete="name" />
+      </div>
+      <div class="field">
+        <label>Roll number</label>
+        <input type="text" id="student-roll" placeholder="e.g. 24" autocomplete="off" />
+      </div>
+      <button class="btn btn-primary btn-full" id="student-btn" onclick="startQuiz()">Start quiz →</button>
+    </div>
+  </div>
+
+  <!-- ── Screen 3: Quiz ── -->
+  <div class="screen" id="screen-quiz">
+    <div class="card">
+      <div class="quiz-header">
+        <div class="quiz-title" id="quiz-title-display"></div>
+        <div class="quiz-meta"  id="quiz-meta-display"></div>
+        <div class="progress-bar-wrap">
+          <div class="progress-bar" id="progress-bar" style="width:0%"></div>
+        </div>
+      </div>
+      <div id="question-area"></div>
+      <div class="nav-row">
+        <button class="btn" id="prev-btn" onclick="goQuestion(-1)" style="background:#f0f0f5;color:#333">← Previous</button>
+        <button class="btn btn-primary" id="next-btn" onclick="goQuestion(1)">Next →</button>
+        <button class="btn btn-primary" id="submit-btn" onclick="submitQuiz()" style="display:none">Submit quiz</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Screen 4: Results ── -->
+  <div class="screen" id="screen-result">
+    <div class="card">
+      <div class="result-score">
+        <div class="score-circle">
+          <div class="score-num" id="res-score"></div>
+          <div class="score-den" id="res-total"></div>
+        </div>
+        <div class="score-pct" id="res-pct"></div>
+        <div class="score-msg" id="res-msg"></div>
+      </div>
+      <div class="review-list" id="review-list"></div>
+      <button class="btn btn-primary btn-full" onclick="resetAll()" style="margin-top:1.5rem">Take another quiz</button>
+    </div>
+  </div>
+
+</div>
+
+<script>
+// ── State ─────────────────────────────────────────────────────────────────────
+let _assignment = null;   // { assignment_id, quiz_title, class_name, questions[] }
+let _studentName = '';
+let _rollNumber  = '';
+let _answers     = {};    // question_id → chosen_index
+let _currentQ    = 0;
+
+function apiBase() {
+  return window.location.origin;
+}
+
+function showScreen(id) {
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+}
+
+function showError(elId, msg) {
+  const el = document.getElementById(elId);
+  el.textContent = msg;
+  el.classList.add('show');
+}
+function clearError(elId) {
+  document.getElementById(elId).classList.remove('show');
+}
+
+// ── Screen 1: class lookup ─────────────────────────────────────────────────────
+document.getElementById('class-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') lookupClass();
+});
+
+async function lookupClass() {
+  const code = document.getElementById('class-input').value.trim();
+  if (!code) { showError('class-error', 'Please enter your class code.'); return; }
+  clearError('class-error');
+
+  const btn = document.getElementById('class-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Looking up…';
+
+  try {
+    const res  = await fetch(apiBase() + '/api/take/' + encodeURIComponent(code));
+    const data = await res.json();
+    if (!res.ok) { showError('class-error', data.error || 'Class not found.'); return; }
+
+    _assignment = data;
+    document.getElementById('student-quiz-title').textContent = data.quiz_title;
+    document.getElementById('student-quiz-sub').textContent =
+      `Class: ${data.class_name} · ${data.questions.length} question${data.questions.length !== 1 ? 's' : ''}`;
+    showScreen('screen-student');
+    document.getElementById('student-name').focus();
+  } catch {
+    showError('class-error', 'Network error. Please try again.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Continue →';
+  }
+}
+
+// ── Screen 2: student details ──────────────────────────────────────────────────
+document.getElementById('student-roll').addEventListener('keydown', e => {
+  if (e.key === 'Enter') startQuiz();
+});
+
+function startQuiz() {
+  const name = document.getElementById('student-name').value.trim();
+  const roll = document.getElementById('student-roll').value.trim();
+  if (!name) { showError('student-error', 'Please enter your name.'); return; }
+  if (!roll) { showError('student-error', 'Please enter your roll number.'); return; }
+  clearError('student-error');
+
+  _studentName = name;
+  _rollNumber  = roll;
+  _answers     = {};
+  _currentQ    = 0;
+
+  document.getElementById('quiz-title-display').textContent = _assignment.quiz_title;
+  document.getElementById('quiz-meta-display').textContent  =
+    `${name} · Roll ${roll} · ${_assignment.class_name}`;
+
+  renderQuestion();
+  showScreen('screen-quiz');
+}
+
+// ── Screen 3: quiz ─────────────────────────────────────────────────────────────
+const LETTERS = ['A','B','C','D','E'];
+
+function renderQuestion() {
+  const questions = _assignment.questions;
+  const q         = questions[_currentQ];
+  const total     = questions.length;
+
+  document.getElementById('progress-bar').style.width = (((_currentQ + 1) / total) * 100) + '%';
+
+  const chosen = _answers[q.id];
+
+  document.getElementById('question-area').innerHTML = `
+    <div class="question-block">
+      <div class="q-num">Question ${_currentQ + 1} of ${total}</div>
+      <div class="q-text">${escHtml(q.text)}</div>
+      <div class="options">
+        ${q.options.map((opt, i) => `
+          <label class="option ${chosen === i ? 'selected' : ''}" onclick="selectOption(${i})">
+            <input type="radio" name="opt" value="${i}" ${chosen === i ? 'checked' : ''} style="display:none"/>
+            <div class="opt-letter">${LETTERS[i]}</div>
+            ${escHtml(opt)}
+          </label>
+        `).join('')}
+      </div>
+    </div>`;
+
+  document.getElementById('prev-btn').style.display   = _currentQ === 0        ? 'none'  : '';
+  document.getElementById('next-btn').style.display   = _currentQ === total - 1 ? 'none'  : '';
+  document.getElementById('submit-btn').style.display = _currentQ === total - 1 ? ''      : 'none';
+}
+
+function selectOption(idx) {
+  const q = _assignment.questions[_currentQ];
+  _answers[q.id] = idx;
+  renderQuestion();
+}
+
+function goQuestion(dir) {
+  const next = _currentQ + dir;
+  if (next < 0 || next >= _assignment.questions.length) return;
+  _currentQ = next;
+  renderQuestion();
+}
+
+async function submitQuiz() {
+  const unanswered = _assignment.questions.filter(q => _answers[q.id] === undefined);
+  if (unanswered.length > 0) {
+    if (!confirm(`You have ${unanswered.length} unanswered question${unanswered.length > 1 ? 's' : ''}. Submit anyway?`)) return;
+  }
+
+  const btn = document.getElementById('submit-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Submitting…';
+
+  const answersPayload = _assignment.questions.map(q => ({
+    question_id:  q.id,
+    chosen_index: _answers[q.id] ?? -1,
+  })).filter(a => a.chosen_index !== -1);
+
+  try {
+    const res  = await fetch(apiBase() + '/api/take/' + encodeURIComponent(_assignment.class_name) + '/submit', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({
+        assignment_id: _assignment.assignment_id,
+        student_name:  _studentName,
+        roll_number:   _rollNumber,
+        answers:       answersPayload,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) { alert(data.error || 'Submission failed.'); return; }
+
+    showResults(data.score, data.total, data.percent);
+  } catch {
+    alert('Network error. Please try again.');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = 'Submit quiz';
+  }
+}
+
+// ── Screen 4: results ──────────────────────────────────────────────────────────
+function showResults(score, total, percent) {
+  document.getElementById('res-score').textContent = score;
+  document.getElementById('res-total').textContent = `/ ${total}`;
+  document.getElementById('res-pct').textContent   = `${percent}%`;
+
+  let msg = '';
+  if (percent >= 80)      msg = 'Excellent work!';
+  else if (percent >= 60) msg = 'Good effort — keep practising.';
+  else                    msg = 'Keep going — you\'ll improve with practice.';
+  document.getElementById('res-msg').textContent = msg;
+
+  // Build answer review using questions we already have (no correct index was sent)
+  // We only show which ones were answered — we can't show correct/wrong without correct_index
+  const reviewHtml = _assignment.questions.map((q, i) => {
+    const chosen = _answers[q.id];
+    const letter = chosen !== undefined ? LETTERS[chosen] : '—';
+    return `
+      <div class="review-item">
+        <div class="review-q">Q${i + 1}: ${escHtml(q.text)}</div>
+        <div class="review-a">Your answer: ${letter}${chosen !== undefined ? ') ' + escHtml(q.options[chosen]) : ' (not answered)'}</div>
+      </div>`;
+  }).join('');
+
+  document.getElementById('review-list').innerHTML = reviewHtml;
+  showScreen('screen-result');
+}
+
+function resetAll() {
+  _assignment  = null;
+  _studentName = '';
+  _rollNumber  = '';
+  _answers     = {};
+  _currentQ    = 0;
+  document.getElementById('class-input').value   = '';
+  document.getElementById('student-name').value  = '';
+  document.getElementById('student-roll').value  = '';
+  showScreen('screen-class');
+}
+
+// Pre-fill class code from URL param ?class=10A
+(function() {
+  const p = new URLSearchParams(window.location.search).get('class');
+  if (p) {
+    document.getElementById('class-input').value = p;
+    lookupClass();
+  }
+})();
+
+function escHtml(s) {
+  return String(s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+</script>
+</body>
+</html>

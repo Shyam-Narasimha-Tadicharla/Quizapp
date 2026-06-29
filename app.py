@@ -37,7 +37,7 @@ import fitz  # PyMuPDF
 import jwt as pyjwt
 from sqlalchemy import create_engine, select, func, text
 from sqlalchemy.orm import Session
-from models import School, User, Quiz, Question, QuizQuestion, Subject, SubjectTopic, UserSubject
+from models import School, User, Quiz, Question, QuizQuestion, Subject, SubjectTopic, UserSubject, Assignment, Result, Answer
 
 # ─── App setup ────────────────────────────────────────────────────────────────
 
@@ -291,6 +291,7 @@ def load_quiz(quiz_id: str) -> dict | None:
             select(Question)
             .join(QuizQuestion, QuizQuestion.question_id == Question.id)
             .where(QuizQuestion.quiz_id == quiz_id)
+            .where(Question.deleted_at.is_(None))
             .order_by(QuizQuestion.position)
         )
         rows = session.execute(stmt).scalars().all()
@@ -844,7 +845,7 @@ def get_questions():
     with Session(_engine) as session:
         allowed = _allowed_topics_for_user(session, g.user)
 
-        stmt = select(Question).where(Question.school_id == g.school_id)
+        stmt = select(Question).where(Question.school_id == g.school_id).where(Question.deleted_at.is_(None))
         if allowed is not None:
             stmt = stmt.where(Question.topic.in_(allowed))
         if topic_filter:
@@ -880,6 +881,7 @@ def get_topics():
             select(Question.topic)
             .where(Question.school_id == g.school_id)
             .where(Question.topic.isnot(None))
+            .where(Question.deleted_at.is_(None))
         )
         if allowed is not None:
             stmt = stmt.where(Question.topic.in_(allowed))
@@ -917,6 +919,7 @@ def create_quiz_from_bank():
             select(Question)
             .where(Question.id.in_(question_ids))
             .where(Question.school_id == g.school_id)
+            .where(Question.deleted_at.is_(None))
         ).scalars().all()
 
         found_ids = {row.id for row in rows}
@@ -974,6 +977,7 @@ def update_question(question_id: str):
             select(Question)
             .where(Question.id == question_id)
             .where(Question.school_id == g.school_id)
+            .where(Question.deleted_at.is_(None))
         ).scalar_one_or_none()
 
         if q is None:
@@ -994,6 +998,7 @@ def get_question_quizzes(question_id: str):
             select(Question)
             .where(Question.id == question_id)
             .where(Question.school_id == g.school_id)
+            .where(Question.deleted_at.is_(None))
         ).scalar_one_or_none()
 
         if q is None:
@@ -1061,6 +1066,7 @@ def delete_question(question_id: str):
             select(Question)
             .where(Question.id == question_id)
             .where(Question.school_id == g.school_id)
+            .where(Question.deleted_at.is_(None))
         ).scalar_one_or_none()
 
         if q is None:
@@ -1076,10 +1082,10 @@ def delete_question(question_id: str):
                 "quiz_count": quiz_count,
             }), 409
 
-        session.delete(q)
+        q.deleted_at = datetime.now(timezone.utc)
         session.commit()
 
-    log.info("Deleted question %s school=%s", question_id, g.school_id)
+    log.info("Soft-deleted question %s school=%s", question_id, g.school_id)
     return jsonify({"message": "Question deleted."})
 
 
@@ -1399,6 +1405,297 @@ def delete_teacher(user_id: str):
         session.commit()
 
     return jsonify({"message": "Teacher removed."})
+
+
+# ─── Routes — Assignments ─────────────────────────────────────────────────────
+
+@app.route("/api/assignments", methods=["GET"])
+@require_auth
+def list_assignments():
+    """List all assignments for this school, newest first."""
+    with Session(_engine) as session:
+        rows = session.execute(
+            select(Assignment, Quiz.title)
+            .join(Quiz, Quiz.id == Assignment.quiz_id)
+            .where(Assignment.school_id == g.school_id)
+            .order_by(Assignment.created_at.desc())
+        ).all()
+
+    return jsonify({"assignments": [
+        {
+            "id":         a.id,
+            "class_name": a.class_name,
+            "quiz_id":    a.quiz_id,
+            "quiz_title": title,
+            "opens_at":   a.opens_at.isoformat()  if a.opens_at  else None,
+            "closes_at":  a.closes_at.isoformat() if a.closes_at else None,
+            "created_at": a.created_at.isoformat(),
+        }
+        for a, title in rows
+    ]})
+
+
+@app.route("/api/assignments", methods=["POST"])
+@require_auth
+def create_assignment():
+    """Create an assignment linking a quiz to a class name. Teacher or admin."""
+    body       = request.get_json(silent=True) or {}
+    quiz_id    = (body.get("quiz_id")    or "").strip()
+    class_name = (body.get("class_name") or "").strip()
+    opens_at   = body.get("opens_at")
+    closes_at  = body.get("closes_at")
+
+    if not quiz_id or not class_name:
+        return jsonify({"error": "quiz_id and class_name are required."}), 400
+
+    def _parse_dt(val):
+        if not val:
+            return None
+        try:
+            return datetime.fromisoformat(val.replace("Z", "+00:00"))
+        except Exception:
+            return None
+
+    with Session(_engine) as session:
+        quiz = session.execute(
+            select(Quiz)
+            .where(Quiz.id == quiz_id)
+            .where(Quiz.school_id == g.school_id)
+        ).scalar_one_or_none()
+        if quiz is None:
+            return jsonify({"error": "Quiz not found."}), 404
+
+        a = Assignment(
+            id         = str(uuid.uuid4()),
+            school_id  = g.school_id,
+            quiz_id    = quiz_id,
+            created_by = g.user_id,
+            class_name = class_name,
+            opens_at   = _parse_dt(opens_at),
+            closes_at  = _parse_dt(closes_at),
+        )
+        session.add(a)
+        session.commit()
+        aid = a.id
+
+    log.info("Assignment created: class=%s quiz=%s school=%s", class_name, quiz_id, g.school_id)
+    return jsonify({"id": aid, "class_name": class_name, "quiz_id": quiz_id}), 201
+
+
+@app.route("/api/assignments/<assignment_id>", methods=["DELETE"])
+@require_auth
+def delete_assignment(assignment_id: str):
+    """Delete an assignment (and its results). Teacher or admin."""
+    with Session(_engine) as session:
+        a = session.execute(
+            select(Assignment)
+            .where(Assignment.id == assignment_id)
+            .where(Assignment.school_id == g.school_id)
+        ).scalar_one_or_none()
+        if a is None:
+            return jsonify({"error": "Assignment not found."}), 404
+        session.delete(a)
+        session.commit()
+    return jsonify({"message": "Assignment deleted."})
+
+
+@app.route("/api/assignments/<assignment_id>/results", methods=["GET"])
+@require_auth
+def get_assignment_results(assignment_id: str):
+    """Get all student results for an assignment with per-question breakdown."""
+    with Session(_engine) as session:
+        a = session.execute(
+            select(Assignment)
+            .where(Assignment.id == assignment_id)
+            .where(Assignment.school_id == g.school_id)
+        ).scalar_one_or_none()
+        if a is None:
+            return jsonify({"error": "Assignment not found."}), 404
+
+        results = session.execute(
+            select(Result)
+            .where(Result.assignment_id == assignment_id)
+            .order_by(Result.submitted_at)
+        ).scalars().all()
+
+        out = []
+        for r in results:
+            ans_rows = session.execute(
+                select(Answer).where(Answer.result_id == r.id)
+            ).scalars().all()
+            out.append({
+                "id":           r.id,
+                "student_name": r.student_name,
+                "roll_number":  r.roll_number,
+                "class_name":   r.class_name,
+                "score":        r.score,
+                "total":        r.total,
+                "percent":      round(r.score / r.total * 100) if r.total else 0,
+                "submitted_at": r.submitted_at.isoformat(),
+                "answers": [
+                    {
+                        "question_id":  ans.question_id,
+                        "chosen_index": ans.chosen_index,
+                        "is_correct":   ans.is_correct,
+                    }
+                    for ans in ans_rows
+                ],
+            })
+
+    return jsonify({"results": out})
+
+
+# ─── Routes — Student take (public) ───────────────────────────────────────────
+
+@app.route("/take", methods=["GET"])
+def take_page():
+    take_path = Path(__file__).parent / "take.html"
+    if not take_path.exists():
+        return "take.html not found.", 404
+    return take_path.read_text(encoding="utf-8"), 200, {"Content-Type": "text/html"}
+
+
+@app.route("/api/take/<class_name>", methods=["GET"])
+def get_take_quiz(class_name: str):
+    """
+    Public — student enters a class name, get back the active assignment's quiz.
+    Does NOT include correct answers.
+    """
+    now = datetime.now(timezone.utc)
+    with Session(_engine) as session:
+        a = session.execute(
+            select(Assignment)
+            .where(func.lower(Assignment.class_name) == class_name.strip().lower())
+            .where(
+                (Assignment.opens_at.is_(None))  | (Assignment.opens_at  <= now)
+            )
+            .where(
+                (Assignment.closes_at.is_(None)) | (Assignment.closes_at >= now)
+            )
+            .order_by(Assignment.created_at.desc())
+        ).scalar_one_or_none()
+
+        if a is None:
+            return jsonify({"error": "No active assignment found for this class."}), 404
+
+        quiz = session.get(Quiz, a.quiz_id)
+        stmt = (
+            select(Question)
+            .join(QuizQuestion, QuizQuestion.question_id == Question.id)
+            .where(QuizQuestion.quiz_id == a.quiz_id)
+            .where(Question.deleted_at.is_(None))
+            .order_by(QuizQuestion.position)
+        )
+        questions = session.execute(stmt).scalars().all()
+
+    return jsonify({
+        "assignment_id": a.id,
+        "quiz_title":    quiz.title,
+        "class_name":    a.class_name,
+        "questions": [
+            {
+                "id":      q.id,
+                "text":    q.text,
+                "options": q.options,
+                # correct_index intentionally omitted
+            }
+            for q in questions
+        ],
+    })
+
+
+@app.route("/api/take/<class_name>/submit", methods=["POST"])
+def submit_quiz(class_name: str):
+    """
+    Public — student submits their answers.
+    Body: { assignment_id, student_name, roll_number, answers: [{question_id, chosen_index}] }
+    """
+    body          = request.get_json(silent=True) or {}
+    assignment_id = (body.get("assignment_id") or "").strip()
+    student_name  = (body.get("student_name")  or "").strip()
+    roll_number   = (body.get("roll_number")   or "").strip()
+    raw_answers   = body.get("answers", [])
+
+    if not assignment_id or not student_name or not roll_number:
+        return jsonify({"error": "assignment_id, student_name, and roll_number are required."}), 400
+    if not isinstance(raw_answers, list) or len(raw_answers) == 0:
+        return jsonify({"error": "answers must be a non-empty array."}), 400
+
+    now = datetime.now(timezone.utc)
+
+    with Session(_engine) as session:
+        a = session.execute(
+            select(Assignment)
+            .where(Assignment.id == assignment_id)
+            .where(func.lower(Assignment.class_name) == class_name.strip().lower())
+        ).scalar_one_or_none()
+
+        if a is None:
+            return jsonify({"error": "Assignment not found."}), 404
+
+        if a.closes_at and a.closes_at < now:
+            return jsonify({"error": "This assignment has closed."}), 403
+
+        # Load correct answers for scoring
+        q_rows = session.execute(
+            select(Question)
+            .join(QuizQuestion, QuizQuestion.question_id == Question.id)
+            .where(QuizQuestion.quiz_id == a.quiz_id)
+            .where(Question.deleted_at.is_(None))
+        ).scalars().all()
+        correct_map = {q.id: q.correct_index for q in q_rows}
+
+        score = 0
+        answer_objs = []
+        for ans in raw_answers:
+            qid    = ans.get("question_id", "")
+            chosen = ans.get("chosen_index")
+            if chosen is None or qid not in correct_map:
+                continue
+            correct    = correct_map[qid]
+            is_correct = (int(chosen) == correct)
+            if is_correct:
+                score += 1
+            answer_objs.append({
+                "question_id":  qid,
+                "chosen_index": int(chosen),
+                "is_correct":   is_correct,
+            })
+
+        total     = len(correct_map)
+        result_id = str(uuid.uuid4())
+
+        result = Result(
+            id            = result_id,
+            assignment_id = assignment_id,
+            student_name  = student_name,
+            roll_number   = roll_number,
+            class_name    = a.class_name,
+            score         = score,
+            total         = total,
+            submitted_at  = now,
+        )
+        session.add(result)
+
+        for ans in answer_objs:
+            session.add(Answer(
+                id           = str(uuid.uuid4()),
+                result_id    = result_id,
+                question_id  = ans["question_id"],
+                chosen_index = ans["chosen_index"],
+                is_correct   = ans["is_correct"],
+            ))
+
+        session.commit()
+
+    log.info("Quiz submitted: student=%s roll=%s class=%s score=%d/%d",
+             student_name, roll_number, class_name, score, total)
+
+    return jsonify({
+        "score":   score,
+        "total":   total,
+        "percent": round(score / total * 100) if total else 0,
+    }), 201
 
 
 # ─── Entry point ──────────────────────────────────────────────────────────────

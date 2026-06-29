@@ -1,19 +1,16 @@
 """
-SQLAlchemy 2.0 ORM models — Phase 4 schema.
+SQLAlchemy 2.0 ORM models — Phase 2/3 completion schema.
 
 Tables built now:   schools, quizzes, questions, quiz_questions, users,
-                    subjects, subject_topics, user_subjects
-Tables deferred:    results/answers (Phase 6)
-
-Column names follow the ROADMAP spec (text / options / correct_index).
-The app layer translates between the legacy API names (q / opts / correct)
-and these DB names inside save_quiz() and load_quiz() only.
+                    subjects, subject_topics, user_subjects,
+                    assignments, results, answers
 """
 
 import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import (
+    Boolean,
     Column,
     String,
     Integer,
@@ -86,6 +83,7 @@ class Quiz(Base):
         cascade="all, delete-orphan",
         order_by="QuizQuestion.position",
     )
+    assignments    = relationship("Assignment", back_populates="quiz")
 
 
 class Question(Base):
@@ -96,10 +94,12 @@ class Question(Base):
     text          = Column(Text, nullable=False)
     options       = Column(ARRAY(Text), nullable=False)
     correct_index = Column(Integer, nullable=False)
-    topic         = Column(String(255), nullable=True)   # e.g. "Algebra", "World War II"
+    topic         = Column(String(255), nullable=True)
+    deleted_at    = Column(DateTime(timezone=True), nullable=True)  # soft delete
 
     school         = relationship("School", back_populates="questions")
     quiz_questions = relationship("QuizQuestion", back_populates="question")
+    answers        = relationship("Answer", back_populates="question")
 
 
 class QuizQuestion(Base):
@@ -164,3 +164,53 @@ class Subject(Base):
     school      = relationship("School",       back_populates="subjects")
     topic_links = relationship("SubjectTopic", back_populates="subject", cascade="all, delete-orphan")
     user_links  = relationship("UserSubject",  back_populates="subject", cascade="all, delete-orphan")
+
+
+# ── Phase 2/3 completion: assignments, results, answers ───────────────────────
+
+class Assignment(Base):
+    """A teacher assigns a quiz to a class via a class_name code."""
+    __tablename__ = "assignments"
+
+    id         = Column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    school_id  = Column(UUID(as_uuid=False), ForeignKey("schools.id"),              nullable=False)
+    quiz_id    = Column(UUID(as_uuid=False), ForeignKey("quizzes.id",  ondelete="CASCADE"), nullable=False)
+    created_by = Column(UUID(as_uuid=False), ForeignKey("users.id"),                nullable=False)
+    class_name = Column(String(100), nullable=False)
+    opens_at   = Column(DateTime(timezone=True), nullable=True)
+    closes_at  = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_now)
+
+    quiz    = relationship("Quiz",   back_populates="assignments")
+    results = relationship("Result", back_populates="assignment", cascade="all, delete-orphan")
+
+
+class Result(Base):
+    """One student's attempt at an assigned quiz."""
+    __tablename__ = "results"
+
+    id            = Column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    assignment_id = Column(UUID(as_uuid=False), ForeignKey("assignments.id", ondelete="CASCADE"), nullable=False)
+    student_name  = Column(String(255), nullable=False)
+    roll_number   = Column(String(50),  nullable=False)
+    class_name    = Column(String(100), nullable=False)
+    score         = Column(Integer, nullable=False)
+    total         = Column(Integer, nullable=False)
+    submitted_at  = Column(DateTime(timezone=True), nullable=False, default=_now)
+
+    assignment = relationship("Assignment", back_populates="results")
+    answers    = relationship("Answer",     back_populates="result", cascade="all, delete-orphan")
+
+
+class Answer(Base):
+    """One answer row per question per student attempt."""
+    __tablename__ = "answers"
+
+    id           = Column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    result_id    = Column(UUID(as_uuid=False), ForeignKey("results.id",   ondelete="CASCADE"), nullable=False)
+    question_id  = Column(UUID(as_uuid=False), ForeignKey("questions.id", ondelete="SET NULL"), nullable=True)
+    chosen_index = Column(Integer, nullable=False)
+    is_correct   = Column(Boolean, nullable=False)
+
+    result   = relationship("Result",   back_populates="answers")
+    question = relationship("Question", back_populates="answers")
