@@ -1704,6 +1704,8 @@ def submit_quiz(class_name: str):
         "score":   score,
         "total":   total,
         "percent": round(score / total * 100) if total else 0,
+        # Return correct answers so the student can see what they got wrong
+        "correct_answers": {qid: idx for qid, idx in correct_map.items()},
     }), 201
 
 
