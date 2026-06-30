@@ -1750,6 +1750,7 @@ def get_assignment_results(assignment_id: str):
         results = session.execute(
             select(Result)
             .where(Result.assignment_id == assignment_id)
+            .where(Result.is_complete == True)  # noqa: E712
             .order_by(Result.submitted_at)
         ).scalars().all()
 
@@ -1943,6 +1944,24 @@ def start_quiz(class_name: str):
         if a.closes_at and a.closes_at.date() < now.date():
             return jsonify({"error": "This assignment has closed."}), 403
 
+        # Block re-attempts: if a completed result exists for this roll number, reject
+        existing_complete = session.execute(
+            select(Result)
+            .where(Result.assignment_id == assignment_id)
+            .where(Result.roll_number == roll_number)
+            .where(Result.is_complete == True)  # noqa: E712
+        ).scalar_one_or_none()
+        if existing_complete:
+            return jsonify({"error": "You have already submitted this test. Re-attempts are not allowed."}), 403
+
+        # Clean up any prior abandoned (incomplete) attempts by this roll number
+        session.execute(
+            Result.__table__.delete()
+            .where(Result.__table__.c.assignment_id == assignment_id)
+            .where(Result.__table__.c.roll_number == roll_number)
+            .where(Result.__table__.c.is_complete == False)  # noqa: E712
+        )
+
         result_id = str(uuid.uuid4())
         result = Result(
             id            = result_id,
@@ -1954,6 +1973,7 @@ def start_quiz(class_name: str):
             total         = 0,
             submitted_at  = now,
             started_at    = now,
+            is_complete   = False,
         )
         session.add(result)
         session.commit()
@@ -2088,6 +2108,7 @@ def submit_quiz(class_name: str):
             result.submitted_at   = now
             result.question_order = question_order or None
             result.option_orders  = option_orders  or None
+            result.is_complete    = True
             result_id = result.id
         else:
             result_id = str(uuid.uuid4())
@@ -2102,6 +2123,7 @@ def submit_quiz(class_name: str):
                 submitted_at   = now,
                 question_order = question_order or None,
                 option_orders  = option_orders  or None,
+                is_complete    = True,
             )
             session.add(result)
 

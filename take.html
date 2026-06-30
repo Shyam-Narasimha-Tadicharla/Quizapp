@@ -244,9 +244,6 @@
   <div class="screen" id="screen-quiz">
     <div class="card">
       <div class="quiz-header">
-        <div style="display:flex;align-items:center;gap:10px;margin-bottom:.5rem">
-          <button onclick="goBack('screen-student')" style="background:none;border:none;color:var(--ink-dim);font-size:13px;cursor:pointer;padding:0;display:flex;align-items:center;gap:5px">← Back</button>
-        </div>
         <div class="quiz-title" id="quiz-title-display"></div>
         <div class="quiz-meta"  id="quiz-meta-display"></div>
       </div>
@@ -299,22 +296,10 @@ function showScreen(id) {
 }
 
 function goBack(targetScreen) {
-  if (targetScreen === 'screen-student') {
-    // Going back from quiz screen — confirm if any answers filled
-    const answered = Object.keys(_answers).length;
-    if (answered > 0 && !confirm('Go back? Your answers will be lost.')) return;
-    stopTimer();
-    clearAnswers();
-    _answers   = {};
-    _resultId  = null;
-    document.getElementById('timer-bar').style.display = 'none';
-  }
-  if (targetScreen === 'screen-class') {
-    // Going back to class entry — clear student fields
-    document.getElementById('student-name').value = '';
-    document.getElementById('student-roll').value = '';
-    clearError('student-error');
-  }
+  // Only screen-class is a valid back target (from student details screen)
+  document.getElementById('student-name').value = '';
+  document.getElementById('student-roll').value = '';
+  clearError('student-error');
   showScreen(targetScreen);
 }
 function showError(elId, msg) {

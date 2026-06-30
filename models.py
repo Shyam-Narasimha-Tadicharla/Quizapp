@@ -208,7 +208,8 @@ class Result(Base):
     question_order = Column(JSONB, nullable=True)  # [question_id, ...]  in seen order
     option_orders  = Column(JSONB, nullable=True)  # {question_id: [original_idx, ...]}
     # Phase 5 timed delivery
-    started_at     = Column(DateTime(timezone=True), nullable=True)  # server-side start time
+    started_at     = Column(DateTime(timezone=True), nullable=True)   # server-side start time
+    is_complete    = Column(Boolean, nullable=False, default=False)    # False until submit succeeds
 
     assignment   = relationship("Assignment",       back_populates="results")
     answers      = relationship("Answer",           back_populates="result", cascade="all, delete-orphan")
