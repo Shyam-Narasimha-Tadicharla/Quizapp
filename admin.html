@@ -1980,6 +1980,10 @@ async function loadAssignments() {
       (a.randomize_questions || a.randomize_options)
         ? `<span style="font-size:10px;color:var(--ink-dim)"> · shuffle${a.randomize_questions && a.randomize_options ? ' Q+A' : a.randomize_questions ? ' Q' : ' A'}</span>`
         : '';
+    const timerBadge = a =>
+      a.duration_minutes
+        ? `<span style="font-size:10px;padding:1px 7px;border-radius:99px;background:rgba(99,102,241,.15);color:#a5b4fc;font-weight:600;margin-left:4px">⏱ ${a.duration_minutes}m</span>`
+        : '';
 
     body.innerHTML = _assignments.map(a => `
       <div class="assign-row">
@@ -1988,6 +1992,7 @@ async function loadAssignments() {
             ${a.mode === 'total_random' ? '<em style="color:var(--ink-dim)">Live paper</em>' : escHtml(a.quiz_title || '—')}
             ${modeBadge(a.mode)}
             ${shuffleBadge(a)}
+            ${timerBadge(a)}
           </div>
           <div class="assign-meta">
             <span class="assign-class">${escHtml(a.class_name)}</span>
@@ -2068,7 +2073,7 @@ function openCreateAssignment() {
         </label>
       </div>
 
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
         <div>
           <div style="font-size:12px;color:var(--ink-dim);margin-bottom:4px">Opens (optional)</div>
           <input class="inline-input" type="datetime-local" id="assign-opens"/>
@@ -2076,6 +2081,10 @@ function openCreateAssignment() {
         <div>
           <div style="font-size:12px;color:var(--ink-dim);margin-bottom:4px">Closes (optional)</div>
           <input class="inline-input" type="datetime-local" id="assign-closes"/>
+        </div>
+        <div>
+          <div style="font-size:12px;color:var(--ink-dim);margin-bottom:4px">Time limit (minutes, optional)</div>
+          <input class="inline-input" type="number" id="assign-duration" min="1" max="300" placeholder="No limit"/>
         </div>
       </div>
     </div>`;
@@ -2183,6 +2192,8 @@ async function submitCreateAssignment() {
   const closes_at  = document.getElementById('assign-closes').value || null;
   const rq         = document.getElementById('assign-rq').checked;
   const ro         = document.getElementById('assign-ro').checked;
+  const durVal     = document.getElementById('assign-duration').value;
+  const duration_minutes = durVal && parseInt(durVal, 10) > 0 ? parseInt(durVal, 10) : null;
 
   if (!class_name) { toast('Class code is required.', 'err'); return; }
 
@@ -2226,6 +2237,7 @@ async function submitCreateAssignment() {
         mode, topic_rules,
         randomize_questions: rq,
         randomize_options:   ro,
+        duration_minutes,
       }),
     });
     const data = await res.json();
@@ -2637,6 +2649,7 @@ async function loadResultsPanel() {
               : a.mode === 'randomized'
               ? '<span style="font-size:10px;padding:1px 7px;border-radius:99px;background:rgba(123,110,246,.15);color:var(--accent-hi);font-weight:600;margin-left:6px">🎲 randomized</span>'
               : ''}
+            ${a.duration_minutes ? `<span style="font-size:10px;padding:1px 7px;border-radius:99px;background:rgba(99,102,241,.15);color:#a5b4fc;font-weight:600;margin-left:4px">⏱ ${a.duration_minutes}m</span>` : ''}
           </div>
           <div class="ra-meta">
             <span class="assign-class">${escHtml(a.class_name)}</span>
@@ -2692,10 +2705,10 @@ async function openResultDetail(assignmentId) {
     // Student table
     const tableHtml = `
       <div style="padding:0">
-        <div style="display:grid;grid-template-columns:2fr 1fr 1fr 80px 28px;gap:10px;
+        <div style="display:grid;grid-template-columns:2fr 1fr 1fr 80px 70px 28px;gap:10px;
           padding:8px 16px;border-bottom:1px solid var(--border);
           font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-dim)">
-          <div>Student</div><div>Roll</div><div>Score</div><div>%</div><div></div>
+          <div>Student</div><div>Roll</div><div>Score</div><div>%</div><div>Time</div><div></div>
         </div>
         ${results.map(r => buildStudentRow(r)).join('')}
       </div>`;
@@ -2708,6 +2721,13 @@ async function openResultDetail(assignmentId) {
     document.getElementById('rd-stats').innerHTML =
       `<div style="color:var(--red);font-size:13px">${err.message}</div>`;
   }
+}
+
+function fmtTime(secs) {
+  if (secs == null) return '—';
+  const m = Math.floor(secs / 60);
+  const s = secs % 60;
+  return m > 0 ? `${m}m ${String(s).padStart(2,'0')}s` : `${s}s`;
 }
 
 function buildStudentRow(r) {
@@ -2776,17 +2796,18 @@ function buildStudentRow(r) {
 
   return `
     <div class="sr-row">
-      <div class="sr-head" onclick="toggleStudentRow('${rowId}')">
+      <div class="sr-head" onclick="toggleStudentRow('${rowId}')" style="grid-template-columns:2fr 1fr 1fr 80px 70px 28px">
         <div style="font-weight:500;color:var(--ink)">${escHtml(r.student_name)}</div>
         <div style="color:var(--ink-dim)">${escHtml(r.roll_number)}</div>
         <div>${r.score} / ${r.total}</div>
         <div><span class="pct-badge ${pctClass}">${r.percent}%</span></div>
+        <div style="color:var(--ink-dim);font-size:12px">${fmtTime(r.time_taken_seconds)}</div>
         <div class="sr-expand-icon" id="${rowId}-icon">▶</div>
       </div>
       <div class="sr-detail" id="${rowId}">
         <div style="padding-top:12px">
           <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;
-            color:var(--ink-dim);margin-bottom:10px">Submitted ${fmtDate(r.submitted_at)}</div>
+            color:var(--ink-dim);margin-bottom:10px">Submitted ${fmtDate(r.submitted_at)}${r.time_taken_seconds != null ? ' · Time taken: ' + fmtTime(r.time_taken_seconds) : ''}</div>
           ${detailContent || '<div style="color:var(--ink-dim);font-size:12px">No answer data available.</div>'}
         </div>
       </div>

@@ -1560,6 +1560,7 @@ def list_assignments():
             "mode":                 a.mode,
             "randomize_questions":  a.randomize_questions,
             "randomize_options":    a.randomize_options,
+            "duration_minutes":     a.duration_minutes,
             "opens_at":             a.opens_at.isoformat()  if a.opens_at  else None,
             "closes_at":            a.closes_at.isoformat() if a.closes_at else None,
             "created_at":           a.created_at.isoformat(),
@@ -1586,6 +1587,7 @@ def create_assignment():
     randomize_questions  = bool(body.get("randomize_questions", False))
     randomize_options    = bool(body.get("randomize_options",   False))
     topic_rules          = body.get("topic_rules")  # [{topic, count}]
+    duration_minutes     = body.get("duration_minutes")  # int or None
 
     if mode not in ("manual", "randomized", "total_random"):
         return jsonify({"error": "mode must be 'manual', 'randomized', or 'total_random'."}), 400
@@ -1626,6 +1628,15 @@ def create_assignment():
             except ValueError as exc:
                 return jsonify({"error": str(exc)}), 422
 
+        dur = None
+        if duration_minutes is not None:
+            try:
+                dur = int(duration_minutes)
+                if dur <= 0:
+                    dur = None
+            except (TypeError, ValueError):
+                dur = None
+
         a = Assignment(
             id                  = str(uuid.uuid4()),
             school_id           = g.school_id,
@@ -1638,6 +1649,7 @@ def create_assignment():
             randomize_questions = randomize_questions,
             randomize_options   = randomize_options,
             topic_rules         = topic_rules,
+            duration_minutes    = dur,
         )
         session.add(a)
         session.commit()
@@ -1768,17 +1780,23 @@ def get_assignment_results(assignment_id: str):
                     for t, v in sorted(acc.items())
                 ]
 
+            time_taken_seconds = None
+            if r.started_at and r.submitted_at:
+                time_taken_seconds = max(0, int((r.submitted_at - r.started_at).total_seconds()))
+
             out.append({
-                "id":           r.id,
-                "student_name": r.student_name,
-                "roll_number":  r.roll_number,
-                "class_name":   r.class_name,
-                "score":        r.score,
-                "total":        r.total,
-                "percent":      round(r.score / r.total * 100) if r.total else 0,
-                "submitted_at": r.submitted_at.isoformat(),
-                "topic_scores": topic_scores_out,
-                "answers":      answers_out,
+                "id":                 r.id,
+                "student_name":       r.student_name,
+                "roll_number":        r.roll_number,
+                "class_name":         r.class_name,
+                "score":              r.score,
+                "total":              r.total,
+                "percent":            round(r.score / r.total * 100) if r.total else 0,
+                "submitted_at":       r.submitted_at.isoformat(),
+                "started_at":         r.started_at.isoformat() if r.started_at else None,
+                "time_taken_seconds": time_taken_seconds,
+                "topic_scores":       topic_scores_out,
+                "answers":            answers_out,
             })
 
     return jsonify({"results": out})
@@ -1850,13 +1868,68 @@ def get_take_quiz(class_name: str):
         )
 
     return jsonify({
-        "assignment_id":  a.id,
-        "quiz_title":     quiz_title,
-        "class_name":     a.class_name,
-        "question_order": question_order,
-        "option_orders":  option_orders,
-        "questions":      _serialize_questions_for_student(questions, option_orders),
+        "assignment_id":    a.id,
+        "quiz_title":       quiz_title,
+        "class_name":       a.class_name,
+        "duration_minutes": a.duration_minutes,
+        "question_order":   question_order,
+        "option_orders":    option_orders,
+        "questions":        _serialize_questions_for_student(questions, option_orders),
     })
+
+
+@app.route("/api/take/<class_name>/start", methods=["POST"])
+def start_quiz(class_name: str):
+    """
+    Public — called when a student clicks Start quiz.
+    Records started_at on a new Result row and returns remaining_seconds.
+
+    Body: { assignment_id, student_name, roll_number }
+    Returns: { result_id, remaining_seconds }  — remaining_seconds is None when no timer
+    """
+    body          = request.get_json(silent=True) or {}
+    assignment_id = (body.get("assignment_id") or "").strip()
+    student_name  = (body.get("student_name")  or "").strip()
+    roll_number   = (body.get("roll_number")   or "").strip()
+
+    if not assignment_id or not student_name or not roll_number:
+        return jsonify({"error": "assignment_id, student_name, and roll_number are required."}), 400
+
+    now = datetime.now(timezone.utc)
+
+    with Session(_engine) as session:
+        a = session.execute(
+            select(Assignment)
+            .where(Assignment.id == assignment_id)
+            .where(func.lower(Assignment.class_name) == class_name.strip().lower())
+        ).scalar_one_or_none()
+
+        if a is None:
+            return jsonify({"error": "Assignment not found."}), 404
+
+        if a.closes_at and a.closes_at.date() < now.date():
+            return jsonify({"error": "This assignment has closed."}), 403
+
+        result_id = str(uuid.uuid4())
+        result = Result(
+            id            = result_id,
+            assignment_id = assignment_id,
+            student_name  = student_name,
+            roll_number   = roll_number,
+            class_name    = a.class_name,
+            score         = 0,
+            total         = 0,
+            submitted_at  = now,
+            started_at    = now,
+        )
+        session.add(result)
+        session.commit()
+
+        remaining_seconds = None
+        if a.duration_minutes:
+            remaining_seconds = a.duration_minutes * 60
+
+    return jsonify({"result_id": result_id, "remaining_seconds": remaining_seconds})
 
 
 @app.route("/api/take/<class_name>/submit", methods=["POST"])
@@ -1877,6 +1950,7 @@ def submit_quiz(class_name: str):
     raw_answers    = body.get("answers", [])
     question_order = body.get("question_order") or []
     option_orders  = body.get("option_orders")  or {}
+    result_id_in   = (body.get("result_id") or "").strip() or None  # from /start
 
     if not assignment_id or not student_name or not roll_number:
         return jsonify({"error": "assignment_id, student_name, and roll_number are required."}), 400
@@ -1897,6 +1971,14 @@ def submit_quiz(class_name: str):
 
         if a.closes_at and a.closes_at.date() < now.date():
             return jsonify({"error": "This assignment has closed."}), 403
+
+        # Timed delivery: check if deadline has passed
+        if result_id_in and a.duration_minutes:
+            existing = session.get(Result, result_id_in)
+            if existing and existing.started_at:
+                elapsed = (now - existing.started_at).total_seconds()
+                if elapsed > a.duration_minutes * 60 + 30:  # 30s grace period
+                    return jsonify({"error": "Time's up. This submission arrived after the deadline."}), 403
 
         # Load all questions for this assignment (across all modes)
         if a.mode == "total_random":
@@ -1957,22 +2039,38 @@ def submit_quiz(class_name: str):
                 "is_correct":   is_correct,
             })
 
-        total     = len(correct_map)
-        result_id = str(uuid.uuid4())
+        total = len(correct_map)
 
-        result = Result(
-            id             = result_id,
-            assignment_id  = assignment_id,
-            student_name   = student_name,
-            roll_number    = roll_number,
-            class_name     = a.class_name,
-            score          = score,
-            total          = total,
-            submitted_at   = now,
-            question_order = question_order or None,
-            option_orders  = option_orders  or None,
-        )
-        session.add(result)
+        if result_id_in:
+            # Re-use the Result row created by /start; update it with final scores
+            result = session.get(Result, result_id_in)
+            if result is None:
+                result_id_in = None  # fall through to create new
+        if not result_id_in:
+            result = None
+
+        if result:
+            result.score          = score
+            result.total          = total
+            result.submitted_at   = now
+            result.question_order = question_order or None
+            result.option_orders  = option_orders  or None
+            result_id = result.id
+        else:
+            result_id = str(uuid.uuid4())
+            result = Result(
+                id             = result_id,
+                assignment_id  = assignment_id,
+                student_name   = student_name,
+                roll_number    = roll_number,
+                class_name     = a.class_name,
+                score          = score,
+                total          = total,
+                submitted_at   = now,
+                question_order = question_order or None,
+                option_orders  = option_orders  or None,
+            )
+            session.add(result)
 
         for ans in answer_objs:
             session.add(Answer(

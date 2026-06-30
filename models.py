@@ -185,6 +185,8 @@ class Assignment(Base):
     randomize_questions  = Column(Boolean,     nullable=False, default=False)
     randomize_options    = Column(Boolean,     nullable=False, default=False)
     topic_rules          = Column(JSONB,       nullable=True)  # [{topic, count}] for modes 2 & 3
+    # Phase 5 timed delivery
+    duration_minutes     = Column(Integer,     nullable=True)  # None = no timer
 
     quiz    = relationship("Quiz",   back_populates="assignments")
     results = relationship("Result", back_populates="assignment", cascade="all, delete-orphan")
@@ -205,6 +207,8 @@ class Result(Base):
     # Phase 4 shuffle maps — stored so scoring and review are always correct
     question_order = Column(JSONB, nullable=True)  # [question_id, ...]  in seen order
     option_orders  = Column(JSONB, nullable=True)  # {question_id: [original_idx, ...]}
+    # Phase 5 timed delivery
+    started_at     = Column(DateTime(timezone=True), nullable=True)  # server-side start time
 
     assignment   = relationship("Assignment",       back_populates="results")
     answers      = relationship("Answer",           back_populates="result", cascade="all, delete-orphan")

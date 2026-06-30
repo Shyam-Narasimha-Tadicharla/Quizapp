@@ -174,6 +174,23 @@
     .review-q { font-weight: 600; margin-bottom: 4px; color: #1a1a2e; }
     .review-a { color: var(--ink-dim); }
 
+    /* timer */
+    .timer-bar {
+      display: flex; align-items: center; justify-content: center; gap: 8px;
+      padding: 8px 16px;
+      border-radius: 99px;
+      background: var(--surface);
+      border: 1.5px solid var(--border);
+      font-size: 14px; font-weight: 700;
+      margin-bottom: 1.25rem;
+      width: fit-content;
+      margin-left: auto; margin-right: auto;
+      transition: border-color .3s, color .3s;
+    }
+    .timer-bar.amber { border-color: #f59e0b; color: #f59e0b; }
+    .timer-bar.red   { border-color: var(--red); color: var(--red); }
+    .timer-icon { font-size: 15px; }
+
     /* screen toggling */
     .screen { display: none; }
     .screen.active { display: block; }
@@ -206,6 +223,9 @@
     <div class="card">
       <div class="card-title" id="student-quiz-title">Quiz</div>
       <div class="card-sub" id="student-quiz-sub"></div>
+      <div id="student-timer-notice" style="display:none;font-size:13px;color:#f59e0b;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.25);border-radius:8px;padding:8px 12px;margin-bottom:1rem">
+        ⏱ This quiz has a time limit of <strong id="student-timer-mins"></strong> minutes. The timer starts when you click Start.
+      </div>
       <div class="error-msg" id="student-error"></div>
       <div class="field">
         <label>Your full name</label>
@@ -225,6 +245,10 @@
       <div class="quiz-header">
         <div class="quiz-title" id="quiz-title-display"></div>
         <div class="quiz-meta"  id="quiz-meta-display"></div>
+      </div>
+      <div class="timer-bar" id="timer-bar" style="display:none">
+        <span class="timer-icon">⏱</span>
+        <span id="timer-display">--:--</span>
       </div>
       <div id="question-area"></div>
       <div class="submit-row">
@@ -253,27 +277,49 @@
 
 <script>
 // ── State ─────────────────────────────────────────────────────────────────────
-let _assignment    = null;   // { assignment_id, quiz_title, class_name, questions[], question_order, option_orders }
+let _assignment    = null;   // full assignment object from /api/take
 let _studentName   = '';
 let _rollNumber    = '';
 let _answers       = {};     // question_id → chosen display index
+let _resultId      = null;   // from /start endpoint
+let _timerInterval = null;   // setInterval handle
+let _timerExpired  = false;
 
-function apiBase() {
-  return window.location.origin;
-}
+const LETTERS = ['A','B','C','D','E'];
+
+function apiBase() { return window.location.origin; }
 
 function showScreen(id) {
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
   document.getElementById(id).classList.add('active');
 }
-
 function showError(elId, msg) {
   const el = document.getElementById(elId);
-  el.textContent = msg;
-  el.classList.add('show');
+  el.textContent = msg; el.classList.add('show');
 }
 function clearError(elId) {
   document.getElementById(elId).classList.remove('show');
+}
+
+// ── sessionStorage helpers ─────────────────────────────────────────────────────
+function _ssKey() { return 'qe-answers-' + (_assignment ? _assignment.assignment_id : ''); }
+
+function saveAnswers() {
+  if (!_assignment) return;
+  try { sessionStorage.setItem(_ssKey(), JSON.stringify(_answers)); } catch {}
+}
+
+function loadAnswers() {
+  if (!_assignment) return;
+  try {
+    const raw = sessionStorage.getItem(_ssKey());
+    if (raw) _answers = JSON.parse(raw);
+  } catch { _answers = {}; }
+}
+
+function clearAnswers() {
+  if (!_assignment) return;
+  try { sessionStorage.removeItem(_ssKey()); } catch {}
 }
 
 // ── Screen 1: class lookup ─────────────────────────────────────────────────────
@@ -296,6 +342,16 @@ async function lookupClass() {
     if (!res.ok) { showError('class-error', data.error || 'Class not found.'); return; }
 
     _assignment = data;
+
+    // Show timer notice if duration set
+    const noticeEl = document.getElementById('student-timer-notice');
+    if (data.duration_minutes) {
+      document.getElementById('student-timer-mins').textContent = data.duration_minutes;
+      noticeEl.style.display = '';
+    } else {
+      noticeEl.style.display = 'none';
+    }
+
     document.getElementById('student-quiz-title').textContent = data.quiz_title;
     document.getElementById('student-quiz-sub').textContent =
       `Class: ${data.class_name} · ${data.questions.length} question${data.questions.length !== 1 ? 's' : ''}`;
@@ -314,30 +370,108 @@ document.getElementById('student-roll').addEventListener('keydown', e => {
   if (e.key === 'Enter') startQuiz();
 });
 
-function startQuiz() {
+async function startQuiz() {
   const name = document.getElementById('student-name').value.trim();
   const roll = document.getElementById('student-roll').value.trim();
   if (!name) { showError('student-error', 'Please enter your name.'); return; }
   if (!roll) { showError('student-error', 'Please enter your roll number.'); return; }
   clearError('student-error');
 
+  const btn = document.getElementById('student-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Starting…';
+
   _studentName = name;
   _rollNumber  = roll;
-  _answers     = {};
-  _currentQ    = 0;
+  _resultId    = null;
+  _timerExpired = false;
 
-  document.getElementById('quiz-title-display').textContent = _assignment.quiz_title;
-  document.getElementById('quiz-meta-display').textContent  =
-    `${name} · Roll ${roll} · ${_assignment.class_name}`;
+  // Restore any previously saved answers (refresh recovery)
+  loadAnswers();
 
-  renderAllQuestions();
-  showScreen('screen-quiz');
-  window.scrollTo(0, 0);
+  try {
+    // Call /start to record server-side start time and get remaining seconds
+    const res  = await fetch(apiBase() + '/api/take/' + encodeURIComponent(_assignment.class_name) + '/start', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({
+        assignment_id: _assignment.assignment_id,
+        student_name:  name,
+        roll_number:   roll,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) { showError('student-error', data.error || 'Could not start quiz.'); return; }
+
+    _resultId = data.result_id;
+
+    document.getElementById('quiz-title-display').textContent = _assignment.quiz_title;
+    document.getElementById('quiz-meta-display').textContent  =
+      `${name} · Roll ${roll} · ${_assignment.class_name}`;
+
+    renderAllQuestions();
+    showScreen('screen-quiz');
+    window.scrollTo(0, 0);
+
+    // Start timer if duration set
+    if (data.remaining_seconds != null) {
+      startTimer(data.remaining_seconds);
+    }
+  } catch {
+    showError('student-error', 'Network error. Please try again.');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = 'Start quiz →';
+  }
+}
+
+// ── Timer ──────────────────────────────────────────────────────────────────────
+function startTimer(remainingSeconds) {
+  const bar     = document.getElementById('timer-bar');
+  const display = document.getElementById('timer-display');
+  bar.style.display = '';
+  bar.className = 'timer-bar';
+
+  let secs = Math.max(0, Math.round(remainingSeconds));
+  const totalSecs = secs;
+
+  function tick() {
+    if (secs <= 0) {
+      clearInterval(_timerInterval);
+      _timerInterval = null;
+      display.textContent = '00:00';
+      bar.className = 'timer-bar red';
+      _timerExpired = true;
+      // Auto-submit
+      submitQuiz(true);
+      return;
+    }
+
+    const m = Math.floor(secs / 60);
+    const s = secs % 60;
+    display.textContent = String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+
+    const pct = secs / totalSecs;
+    if (pct <= 0.10) {
+      bar.className = 'timer-bar red';
+    } else if (pct <= 0.20) {
+      bar.className = 'timer-bar amber';
+    } else {
+      bar.className = 'timer-bar';
+    }
+
+    secs--;
+  }
+
+  tick();
+  _timerInterval = setInterval(tick, 1000);
+}
+
+function stopTimer() {
+  if (_timerInterval) { clearInterval(_timerInterval); _timerInterval = null; }
 }
 
 // ── Screen 3: quiz ─────────────────────────────────────────────────────────────
-const LETTERS = ['A','B','C','D','E'];
-
 function renderAllQuestions() {
   const questions = _assignment.questions;
   document.getElementById('question-area').innerHTML = questions.map((q, i) => `
@@ -359,7 +493,7 @@ function renderAllQuestions() {
 
 function selectOption(questionId, idx) {
   _answers[questionId] = idx;
-  // Update just this question's options visually
+  saveAnswers();  // persist on every selection
   const optsEl = document.getElementById('opts-' + questionId);
   if (!optsEl) return;
   optsEl.querySelectorAll('.option').forEach((el, j) => {
@@ -367,15 +501,21 @@ function selectOption(questionId, idx) {
   });
 }
 
-async function submitQuiz() {
-  const unanswered = _assignment.questions.filter(q => _answers[q.id] === undefined);
-  if (unanswered.length > 0) {
-    if (!confirm(`You have ${unanswered.length} unanswered question${unanswered.length > 1 ? 's' : ''}. Submit anyway?`)) return;
+async function submitQuiz(autoSubmit = false) {
+  if (!autoSubmit) {
+    const unanswered = _assignment.questions.filter(q => _answers[q.id] === undefined);
+    if (unanswered.length > 0) {
+      if (!confirm(`You have ${unanswered.length} unanswered question${unanswered.length > 1 ? 's' : ''}. Submit anyway?`)) return;
+    }
   }
+
+  stopTimer();
 
   const btn = document.getElementById('submit-btn');
   btn.disabled = true;
-  btn.innerHTML = '<span class="spinner"></span> Submitting…';
+  btn.innerHTML = autoSubmit
+    ? '<span class="spinner"></span> Time\'s up — submitting…'
+    : '<span class="spinner"></span> Submitting…';
 
   const answersPayload = _assignment.questions.map(q => ({
     question_id:  q.id,
@@ -390,6 +530,7 @@ async function submitQuiz() {
         assignment_id:  _assignment.assignment_id,
         student_name:   _studentName,
         roll_number:    _rollNumber,
+        result_id:      _resultId,
         question_order: _assignment.question_order || [],
         option_orders:  _assignment.option_orders  || {},
         answers:        answersPayload,
@@ -398,6 +539,7 @@ async function submitQuiz() {
     const data = await res.json();
     if (!res.ok) { alert(data.error || 'Submission failed.'); return; }
 
+    clearAnswers();
     showResults(data.score, data.total, data.percent, data.correct_answers || {}, data.option_orders || {});
   } catch {
     alert('Network error. Please try again.');
@@ -419,19 +561,15 @@ function showResults(score, total, percent, correctAnswers, returnedOptionOrders
   else                    msg = 'Keep going — you\'ll improve with practice.';
   document.getElementById('res-msg').textContent = msg;
 
-  // option_orders maps display index → original index
-  // To show labels we need to find which display slot holds each original index
   const optOrders = returnedOptionOrders || _assignment.option_orders || {};
 
   const reviewHtml = _assignment.questions.map((q, i) => {
-    const displayChosen = _answers[q.id];          // index in displayed (possibly shuffled) options
-    const originalCorrect = correctAnswers[q.id];  // index in original (unshuffled) options
+    const displayChosen   = _answers[q.id];
+    const originalCorrect = correctAnswers[q.id];
 
-    // Map original correct index → display index for label lookup
     const order = optOrders[q.id] || q.options.map((_, j) => j);
     const displayCorrect = order.indexOf(originalCorrect);
 
-    // Map display chosen → original for correctness check
     const originalChosen = displayChosen !== undefined
       ? (order[displayChosen] !== undefined ? order[displayChosen] : displayChosen)
       : undefined;
@@ -440,7 +578,6 @@ function showResults(score, total, percent, correctAnswers, returnedOptionOrders
     const isWrong    = originalChosen !== undefined && originalChosen !== originalCorrect;
     const unanswered = displayChosen === undefined;
 
-    // Labels use the displayed options array (q.options already in display order from server)
     const chosenLabel  = displayChosen  !== undefined ? `${LETTERS[displayChosen]}) ${escHtml(q.options[displayChosen])}`   : '—';
     const correctLabel = displayCorrect >= 0          ? `${LETTERS[displayCorrect]}) ${escHtml(q.options[displayCorrect])}` : '';
 
