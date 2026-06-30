@@ -146,6 +146,27 @@ def allowed_file(filename: str) -> bool:
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
 
 
+_domain_cache: dict = {}  # domain -> school_id, simple in-process cache
+
+def _school_id_for_request() -> str | None:
+    """
+    Resolve school_id from the incoming Host header.
+    Returns None if the domain is not registered to any school.
+    Falls back to None when running locally without a domain match,
+    which lets the take routes use the assignment's own school_id as before.
+    """
+    host = request.host.split(":")[0].lower()  # strip port
+    if host in _domain_cache:
+        return _domain_cache[host]
+    with Session(_engine) as session:
+        school = session.execute(
+            select(School).where(School.domain == host)
+        ).scalar_one_or_none()
+    school_id = school.id if school else None
+    _domain_cache[host] = school_id
+    return school_id
+
+
 def extract_text_from_pdf(file_bytes: bytes) -> str:
     doc   = fitz.open(stream=file_bytes, filetype="pdf")
     pages = [page.get_text("text") for page in doc]
@@ -508,6 +529,7 @@ def setup_page():
   </div>
   <div><label>Setup secret</label><input type="password" id="secret" placeholder="Your SETUP_SECRET"/></div>
   <div><label>School name</label><input type="text" id="school" placeholder="e.g. Greenwood High School"/></div>
+  <div><label>Custom domain <span style="font-weight:400;color:#666">(optional)</span></label><input type="text" id="domain" placeholder="e.g. quiz.greenwood.edu"/></div>
   <div><label>Admin email</label><input type="email" id="email" placeholder="admin@school.edu"/></div>
   <div><label>Admin password</label><input type="password" id="password" placeholder="Min 8 characters"/></div>
   <div class="msg" id="msg"></div>
@@ -517,6 +539,7 @@ def setup_page():
 async function provision() {
   const secret   = document.getElementById('secret').value.trim();
   const school   = document.getElementById('school').value.trim();
+  const domain   = document.getElementById('domain').value.trim();
   const email    = document.getElementById('email').value.trim();
   const password = document.getElementById('password').value;
   const msg      = document.getElementById('msg');
@@ -529,12 +552,13 @@ async function provision() {
   const res  = await fetch('/setup', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ secret, school_name: school, email, password }),
+    body: JSON.stringify({ secret, school_name: school, domain: domain || null, email, password }),
   });
   const data = await res.json();
   if (res.ok) {
     showMsg('School created! Admin can now log in at the main page.', 'ok');
     document.getElementById('school').value   = '';
+    document.getElementById('domain').value   = '';
     document.getElementById('email').value    = '';
     document.getElementById('password').value = '';
   } else {
@@ -570,6 +594,7 @@ def setup_provision():
     email       = (body.get("email") or "").strip().lower()
     password    = body.get("password") or ""
     school_name = (body.get("school_name") or "").strip()
+    domain      = (body.get("domain") or "").strip().lower() or None
 
     if secret != SETUP_SECRET:
         return jsonify({"error": "Invalid setup secret."}), 403
@@ -602,7 +627,7 @@ def setup_provision():
     now       = datetime.now(timezone.utc)
 
     with Session(_engine) as session:
-        session.add(School(id=school_id, name=school_name, created_at=now))
+        session.add(School(id=school_id, name=school_name, domain=domain, created_at=now))
         session.add(User(
             id         = user_id,
             auth_id    = auth_id,
@@ -613,7 +638,7 @@ def setup_provision():
         ))
         session.commit()
 
-    log.info("School provisioned: %s (%s) admin=%s", school_name, school_id, email)
+    log.info("School provisioned: %s (%s) admin=%s domain=%s", school_name, school_id, email, domain)
     return jsonify({"message": f"School '{school_name}' created with admin {email}."}), 201
 
 
@@ -2520,6 +2545,7 @@ def get_take_quiz(class_name: str):
     """
     assignment_id_filter = request.args.get("assignment_id", "").strip() or None
     now = datetime.now(timezone.utc)
+    domain_school_id = _school_id_for_request()
 
     with Session(_engine) as session:
         base_query = (
@@ -2534,6 +2560,8 @@ def get_take_quiz(class_name: str):
             )
             .order_by(Assignment.created_at.desc())
         )
+        if domain_school_id:
+            base_query = base_query.where(Assignment.school_id == domain_school_id)
 
         if assignment_id_filter:
             # Student selected a specific assignment from the picker
@@ -2631,13 +2659,17 @@ def start_quiz(class_name: str):
         return jsonify({"error": "assignment_id, student_name, and roll_number are required."}), 400
 
     now = datetime.now(timezone.utc)
+    domain_school_id = _school_id_for_request()
 
     with Session(_engine) as session:
-        a = session.execute(
+        _q = (
             select(Assignment)
             .where(Assignment.id == assignment_id)
             .where(func.lower(Assignment.class_name) == class_name.strip().lower())
-        ).scalar_one_or_none()
+        )
+        if domain_school_id:
+            _q = _q.where(Assignment.school_id == domain_school_id)
+        a = session.execute(_q).scalar_one_or_none()
 
         if a is None:
             return jsonify({"error": "Assignment not found."}), 404
@@ -2712,13 +2744,17 @@ def submit_quiz(class_name: str):
         raw_answers = []
 
     now = datetime.now(timezone.utc)
+    domain_school_id = _school_id_for_request()
 
     with Session(_engine) as session:
-        a = session.execute(
+        _q = (
             select(Assignment)
             .where(Assignment.id == assignment_id)
             .where(func.lower(Assignment.class_name) == class_name.strip().lower())
-        ).scalar_one_or_none()
+        )
+        if domain_school_id:
+            _q = _q.where(Assignment.school_id == domain_school_id)
+        a = session.execute(_q).scalar_one_or_none()
 
         if a is None:
             return jsonify({"error": "Assignment not found."}), 404

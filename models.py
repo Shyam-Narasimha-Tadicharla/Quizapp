@@ -40,6 +40,7 @@ class School(Base):
 
     id         = Column(UUID(as_uuid=False), primary_key=True, default=_uuid)
     name       = Column(String(255), nullable=False)
+    domain     = Column(String(253), nullable=True, unique=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=_now)
 
     quizzes   = relationship("Quiz",     back_populates="school")
