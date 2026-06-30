@@ -1835,6 +1835,171 @@ def get_assignment_results(assignment_id: str):
     return jsonify({"results": out})
 
 
+@app.route("/api/assignments/<assignment_id>/analytics", methods=["GET"])
+@require_auth
+def get_assignment_analytics(assignment_id: str):
+    """
+    Aggregate analytics for an assignment:
+    - Summary stats (count, avg %, avg time, avg score)
+    - Score distribution (5 buckets: 0-20, 21-40, 41-60, 61-80, 81-100)
+    - Per-topic performance (avg %, total correct/total, student count)
+    - Per-question difficulty (% correct, wrong count, option breakdown)
+    """
+    with Session(_engine) as session:
+        a = session.execute(
+            select(Assignment)
+            .where(Assignment.id == assignment_id)
+            .where(Assignment.school_id == g.school_id)
+        ).scalar_one_or_none()
+        if a is None:
+            return jsonify({"error": "Assignment not found."}), 404
+
+        results = session.execute(
+            select(Result)
+            .where(Result.assignment_id == assignment_id)
+            .where(Result.is_complete == True)  # noqa: E712
+        ).scalars().all()
+
+        if not results:
+            return jsonify({
+                "summary": None,
+                "distribution": [],
+                "topics": [],
+                "questions": [],
+            })
+
+        # ── Summary ──────────────────────────────────────────────────────────
+        n        = len(results)
+        avg_pct  = round(sum(r.score / r.total * 100 if r.total else 0 for r in results) / n)
+        avg_score_num = sum(r.score for r in results)
+        avg_score_den = sum(r.total for r in results) // n if n else 0
+        times    = [int((r.submitted_at - r.started_at).total_seconds())
+                    for r in results if r.started_at and r.submitted_at]
+        avg_time = round(sum(times) / len(times)) if times else None
+
+        summary = {
+            "count":        n,
+            "avg_percent":  avg_pct,
+            "avg_time_seconds": avg_time,
+            "avg_score":    round(sum(r.score for r in results) / n, 1),
+            "avg_total":    round(sum(r.total for r in results) / n, 1),
+        }
+
+        # ── Score distribution ────────────────────────────────────────────────
+        buckets = [0, 0, 0, 0, 0]  # 0-20, 21-40, 41-60, 61-80, 81-100
+        for r in results:
+            pct = round(r.score / r.total * 100) if r.total else 0
+            idx = min(4, pct // 21) if pct < 100 else 4
+            idx = min(4, pct // 20) if pct > 0 else 0
+            buckets[idx] += 1
+        distribution = [
+            {"label": "0–20%",   "count": buckets[0]},
+            {"label": "21–40%",  "count": buckets[1]},
+            {"label": "41–60%",  "count": buckets[2]},
+            {"label": "61–80%",  "count": buckets[3]},
+            {"label": "81–100%", "count": buckets[4]},
+        ]
+
+        # ── Topic performance (from stored ResultTopicScore rows) ─────────────
+        topic_acc: dict = {}
+        for r in results:
+            ts_rows = session.execute(
+                select(ResultTopicScore).where(ResultTopicScore.result_id == r.id)
+            ).scalars().all()
+            for ts in ts_rows:
+                if ts.topic not in topic_acc:
+                    topic_acc[ts.topic] = {"correct": 0, "total": 0, "students": 0}
+                topic_acc[ts.topic]["correct"]  += ts.correct
+                topic_acc[ts.topic]["total"]    += ts.total
+                topic_acc[ts.topic]["students"] += 1
+
+        topics_out = sorted([
+            {
+                "topic":    t,
+                "correct":  v["correct"],
+                "total":    v["total"],
+                "students": v["students"],
+                "percent":  round(v["correct"] / v["total"] * 100) if v["total"] else 0,
+            }
+            for t, v in topic_acc.items()
+        ], key=lambda x: x["percent"])  # weakest first
+
+        # ── Per-question difficulty ───────────────────────────────────────────
+        # Collect all answer rows for this assignment
+        result_ids = [r.id for r in results]
+        all_answers = session.execute(
+            select(Answer).where(Answer.result_id.in_(result_ids))
+        ).scalars().all()
+
+        # Load question metadata
+        if a.mode == "total_random":
+            q_ids = list({ans.question_id for ans in all_answers if ans.question_id})
+            q_rows = session.execute(
+                select(Question)
+                .where(Question.id.in_(q_ids))
+                .where(Question.school_id == g.school_id)
+            ).scalars().all()
+        else:
+            q_rows = session.execute(
+                select(Question)
+                .join(QuizQuestion, QuizQuestion.question_id == Question.id)
+                .where(QuizQuestion.quiz_id == a.quiz_id)
+                .where(Question.deleted_at.is_(None))
+                .order_by(QuizQuestion.position)
+            ).scalars().all()
+
+        q_lookup = {q.id: q for q in q_rows}
+
+        # Per-question accumulators: {q_id: {correct:n, total:n, option_counts:{idx:n}}}
+        q_acc: dict = {}
+        for ans in all_answers:
+            qid = ans.question_id
+            if not qid or qid not in q_lookup:
+                continue
+            if qid not in q_acc:
+                q_acc[qid] = {"correct": 0, "total": 0, "option_counts": {}}
+            q_acc[qid]["total"] += 1
+            if ans.is_correct:
+                q_acc[qid]["correct"] += 1
+            ci = ans.chosen_index
+            q_acc[qid]["option_counts"][ci] = q_acc[qid]["option_counts"].get(ci, 0) + 1
+
+        questions_out = []
+        for position, q in enumerate(q_rows):
+            acc = q_acc.get(q.id, {"correct": 0, "total": 0, "option_counts": {}})
+            pct = round(acc["correct"] / acc["total"] * 100) if acc["total"] else 0
+            option_breakdown = [
+                {
+                    "index":      i,
+                    "text":       q.options[i] if i < len(q.options) else "?",
+                    "count":      acc["option_counts"].get(i, 0),
+                    "is_correct": i == q.correct_index,
+                }
+                for i in range(len(q.options))
+            ]
+            questions_out.append({
+                "position":        position + 1,
+                "question_id":     q.id,
+                "text":            q.text,
+                "topic":           q.topic,
+                "percent_correct": pct,
+                "correct_count":   acc["correct"],
+                "wrong_count":     acc["total"] - acc["correct"],
+                "total_attempts":  acc["total"],
+                "option_breakdown": option_breakdown,
+            })
+
+        # Sort weakest first
+        questions_out.sort(key=lambda x: x["percent_correct"])
+
+    return jsonify({
+        "summary":      summary,
+        "distribution": distribution,
+        "topics":       topics_out,
+        "questions":    questions_out,
+    })
+
+
 # ─── Routes — Student take (public) ───────────────────────────────────────────
 
 @app.route("/take", methods=["GET"])
