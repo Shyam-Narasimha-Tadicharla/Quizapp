@@ -2005,8 +2005,8 @@ async function loadAssignments() {
         <button class="btn btn-sm btn-ghost" onclick="copyTakeLink('${escHtml(a.class_name)}')" title="Copy student link">
           🔗 Link
         </button>
-        <button class="btn btn-sm btn-ghost" onclick="renameAssignment('${a.id}','${escHtml(a.class_name)}','${a.quiz_id || ''}','${escHtml(a.quiz_title || '')}')" title="Rename">
-          ✏ Rename
+        <button class="btn btn-sm btn-ghost" onclick="editAssignment('${a.id}','${escHtml(a.class_name)}','${a.quiz_id || ''}','${escHtml(a.quiz_title || '')}',${a.duration_minutes || 'null'},'${a.opens_at || ''}','${a.closes_at || ''}')" title="Edit">
+          ✏ Edit
         </button>
         ${isAdmin() ? `<button class="btn btn-sm btn-ghost" onclick="confirmDeleteAssignment('${a.id}','${escHtml(a.quiz_title || a.class_name)}')" style="color:var(--red)">✕</button>` : ''}
       </div>
@@ -2266,33 +2266,71 @@ function confirmDeleteAssignment(id, title) {
   );
 }
 
-function renameAssignment(id, currentName, quizId, currentQuizTitle) {
+function editAssignment(id, currentName, quizId, currentQuizTitle, currentDuration, currentOpens, currentCloses) {
   const hasQuiz = !!quizId;
-  document.getElementById('modal-title').textContent = 'Rename assignment';
-  document.getElementById('modal-body').innerHTML =
-    (hasQuiz
-      ? '<div style="font-size:12px;color:var(--ink-dim);margin-bottom:4px">Quiz title (shown to students)</div>' +
-        `<input class="inline-input" id="rename-quiz-title" value="${escHtml(currentQuizTitle || '')}" style="width:100%;margin-bottom:12px" />` +
-        '<div style="font-size:12px;color:var(--ink-dim);margin-bottom:4px">Class code (students enter this to join)</div>'
-      : '<div style="font-size:12px;color:var(--ink-dim);margin-bottom:4px">Class code (students enter this to join)</div>') +
-    `<input class="inline-input" id="rename-class" value="${escHtml(currentName)}" style="width:100%" />`;
+
+  function toLocalInput(isoStr) {
+    if (!isoStr) return '';
+    try {
+      const d = new Date(isoStr);
+      const pad = n => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    } catch { return ''; }
+  }
+
+  document.getElementById('modal-title').textContent = 'Edit assignment';
+  document.getElementById('modal-body').innerHTML = `
+    <div style="display:flex;flex-direction:column;gap:12px">
+      ${hasQuiz ? `
+      <div>
+        <div style="font-size:12px;color:var(--ink-dim);margin-bottom:4px">Quiz title (shown to students)</div>
+        <input class="inline-input" id="edit-quiz-title" value="${escHtml(currentQuizTitle || '')}" style="width:100%"/>
+      </div>` : ''}
+      <div>
+        <div style="font-size:12px;color:var(--ink-dim);margin-bottom:4px">Class code (students enter this to join)</div>
+        <input class="inline-input" id="edit-class" value="${escHtml(currentName)}" style="width:100%"/>
+      </div>
+      <div>
+        <div style="font-size:12px;color:var(--ink-dim);margin-bottom:4px">Time limit (minutes, blank = no limit)</div>
+        <input class="inline-input" type="number" id="edit-duration" min="1" max="300"
+          value="${currentDuration || ''}" placeholder="No limit" style="width:100%"/>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        <div>
+          <div style="font-size:12px;color:var(--ink-dim);margin-bottom:4px">Opens (blank = now)</div>
+          <input class="inline-input" type="datetime-local" id="edit-opens" value="${toLocalInput(currentOpens)}"/>
+        </div>
+        <div>
+          <div style="font-size:12px;color:var(--ink-dim);margin-bottom:4px">Closes (blank = no expiry)</div>
+          <input class="inline-input" type="datetime-local" id="edit-closes" value="${toLocalInput(currentCloses)}"/>
+        </div>
+      </div>
+    </div>`;
+
   document.getElementById('modal-quiz-list').innerHTML = '';
   document.getElementById('modal-confirm-btn').textContent = 'Save';
   document.getElementById('modal-confirm-btn').style.cssText = 'background:var(--accent);border-color:var(--accent);color:#fff';
+
   _modalAction = async () => {
-    const class_name = (document.getElementById('rename-class').value || '').trim();
+    const class_name = (document.getElementById('edit-class').value || '').trim();
     if (!class_name) { toast('Class code cannot be empty.', 'err'); return; }
+
+    const durVal         = document.getElementById('edit-duration').value;
+    const duration_minutes = durVal && parseInt(durVal, 10) > 0 ? parseInt(durVal, 10) : null;
+    const opens_at       = document.getElementById('edit-opens').value  || '';
+    const closes_at      = document.getElementById('edit-closes').value || '';
+
     closeModal();
     try {
       const calls = [
         fetch(apiBase() + `/api/assignments/${id}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json', ...authHeaders() },
-          body: JSON.stringify({ class_name }),
+          body: JSON.stringify({ class_name, duration_minutes, opens_at, closes_at }),
         }),
       ];
       if (hasQuiz) {
-        const newTitle = (document.getElementById('rename-quiz-title').value || '').trim();
+        const newTitle = (document.getElementById('edit-quiz-title').value || '').trim();
         if (newTitle) {
           calls.push(fetch(apiBase() + `/api/quiz/${quizId}`, {
             method: 'PATCH',
@@ -2305,14 +2343,15 @@ function renameAssignment(id, currentName, quizId, currentQuizTitle) {
       for (const res of results) {
         if (!res.ok) { const d = await res.json(); throw new Error(d.error); }
       }
-      toast('Assignment renamed.', 'ok');
+      toast('Assignment updated.', 'ok');
       loadAssignments();
       loadLibrary();
     } catch (err) { toast(err.message, 'err'); }
   };
+
   document.getElementById('generic-modal').classList.add('open');
   setTimeout(() => {
-    const el = document.getElementById('rename-quiz-title') || document.getElementById('rename-class');
+    const el = document.getElementById('edit-quiz-title') || document.getElementById('edit-class');
     if (el) { el.focus(); el.select(); }
   }, 50);
 }

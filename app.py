@@ -1662,11 +1662,37 @@ def create_assignment():
 @app.route("/api/assignments/<assignment_id>", methods=["PATCH"])
 @require_auth
 def update_assignment(assignment_id: str):
-    """Rename an assignment (update class_name). Teacher or admin."""
+    """Update assignment fields: class_name, duration_minutes, opens_at, closes_at."""
     body       = request.get_json(silent=True) or {}
     class_name = (body.get("class_name") or "").strip()
     if not class_name:
         return jsonify({"error": "class_name is required."}), 400
+
+    def _parse_dt(val, end_of_day=False):
+        if not val:
+            return None
+        try:
+            dt = datetime.fromisoformat(val.replace("Z", "+00:00"))
+            if end_of_day and dt.hour == 0 and dt.minute == 0 and dt.second == 0:
+                dt = dt.replace(hour=23, minute=59, second=59)
+            return dt
+        except Exception:
+            return None
+
+    duration_minutes = body.get("duration_minutes")
+    dur = None
+    if duration_minutes is not None:
+        try:
+            dur = int(duration_minutes)
+            if dur <= 0:
+                dur = None
+        except (TypeError, ValueError):
+            dur = None
+
+    opens_at  = _parse_dt(body.get("opens_at"),  end_of_day=False)
+    closes_at = _parse_dt(body.get("closes_at"), end_of_day=True)
+    clear_opens  = body.get("opens_at")  == ""
+    clear_closes = body.get("closes_at") == ""
 
     with Session(_engine) as session:
         a = session.execute(
@@ -1676,7 +1702,13 @@ def update_assignment(assignment_id: str):
         ).scalar_one_or_none()
         if a is None:
             return jsonify({"error": "Assignment not found."}), 404
-        a.class_name = class_name
+
+        a.class_name      = class_name
+        a.duration_minutes = dur
+        if opens_at or clear_opens:
+            a.opens_at = opens_at
+        if closes_at or clear_closes:
+            a.closes_at = closes_at
         session.commit()
 
     return jsonify({"id": assignment_id, "class_name": class_name})
