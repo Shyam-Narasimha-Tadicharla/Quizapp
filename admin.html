@@ -736,6 +736,50 @@
     .opt-bar-fill { height: 100%; border-radius: 99px; background: var(--accent); opacity: .75; }
     .opt-bar-count { width: 24px; text-align: right; color: var(--ink-dim); font-weight: 600; flex-shrink: 0; }
 
+    /* ── Class report ── */
+    .cr-class-btn {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      cursor: pointer; transition: background .15s;
+      font-size: 13.5px;
+    }
+    .cr-class-btn:last-child { border-bottom: none; }
+    .cr-class-btn:hover { background: var(--surface-2); }
+    .cr-class-label { font-weight: 700; color: var(--accent-hi); font-size: 13px; }
+    .cr-class-meta  { font-size: 12px; color: var(--ink-dim); margin-top: 2px; }
+
+    /* Student matrix table */
+    .cr-matrix { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+    .cr-matrix th {
+      text-align: left; font-size: 11px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: .06em;
+      color: var(--ink-dim); padding: 7px 10px;
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+    .cr-matrix th.cr-assign-th { text-align: center; max-width: 80px; }
+    .cr-matrix td { padding: 9px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+    .cr-matrix tr:last-child td { border-bottom: none; }
+    .cr-matrix tr:hover td { background: var(--surface-2); }
+    .cr-avg-cell { text-align: center; font-weight: 700; }
+    .cr-score-cell { text-align: center; }
+
+    /* Trend bars */
+    .cr-trend-row {
+      display: flex; align-items: center; gap: 10px;
+      margin-bottom: 8px; font-size: 12.5px;
+    }
+    .cr-trend-label { width: 160px; flex-shrink: 0; color: var(--ink); font-weight: 500;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .cr-trend-track {
+      flex: 1; height: 20px; border-radius: 5px;
+      background: var(--surface-3); overflow: hidden; position: relative;
+    }
+    .cr-trend-fill { height: 100%; border-radius: 5px; background: var(--accent); opacity: .85; transition: width .4s ease; }
+    .cr-trend-pct { width: 40px; flex-shrink: 0; text-align: right; font-weight: 700; }
+    .cr-trend-n { width: 70px; flex-shrink: 0; color: var(--ink-dim); font-size: 11px; }
+
     /* ── Auth screen ── */
     .auth-screen {
       display: none;
@@ -882,6 +926,9 @@
     </div>
     <div class="nav-item" onclick="showPanel('results')" id="nav-results">
       <span class="nav-icon">📈</span> Results
+    </div>
+    <div class="nav-item" onclick="showPanel('classreport')" id="nav-classreport">
+      <span class="nav-icon">📊</span> Class Report
     </div>
     <div class="nav-item" onclick="showPanel('team')" id="nav-team" style="display:none">
       <span class="nav-icon">👥</span> Team
@@ -1091,7 +1138,56 @@
     </div><!-- /panel-results -->
 
     <!-- ═══════════════════════════════════════
-         PANEL 7 — Team (admin only)
+         PANEL 7 — Class Report
+    ═══════════════════════════════════════ -->
+    <div class="panel" id="panel-classreport">
+      <!-- Class list view -->
+      <div id="cr-list-view">
+        <div style="font-size:13px;color:var(--ink-dim);margin-bottom:1rem">
+          Select a class to see how students are performing across all assignments.
+        </div>
+        <div class="card" id="cr-class-list">
+          <div class="card-body" style="text-align:center;color:var(--ink-dim);font-size:13px">Loading…</div>
+        </div>
+      </div>
+
+      <!-- Class detail view -->
+      <div id="cr-detail-view" style="display:none">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:1.25rem;flex-wrap:wrap">
+          <button class="btn btn-ghost btn-sm" onclick="closeCrDetail()">← Back</button>
+          <div>
+            <div style="font-size:16px;font-weight:700" id="cr-detail-title"></div>
+            <div style="font-size:12px;color:var(--ink-dim)" id="cr-detail-sub"></div>
+          </div>
+        </div>
+
+        <!-- Summary stats -->
+        <div class="stat-row" style="margin-bottom:1.5rem" id="cr-summary-stats"></div>
+
+        <!-- Trend -->
+        <div class="an-section" id="cr-trend-section">
+          <div class="an-section-title">Assignment trend — class average over time</div>
+          <div class="card" style="padding:1rem 1.25rem" id="cr-trend-body"></div>
+        </div>
+
+        <!-- Student matrix -->
+        <div class="an-section" id="cr-matrix-section">
+          <div class="an-section-title">Student scores by assignment</div>
+          <div class="card" style="overflow-x:auto" id="cr-matrix-body"></div>
+        </div>
+
+        <!-- Topic rollup -->
+        <div class="an-section" id="cr-topics-section">
+          <div class="an-section-title">Weakest topics across all assignments</div>
+          <div class="card">
+            <table class="an-table" id="cr-topics-body"></table>
+          </div>
+        </div>
+      </div>
+    </div><!-- /panel-classreport -->
+
+    <!-- ═══════════════════════════════════════
+         PANEL 8 — Team (admin only)
     ═══════════════════════════════════════ -->
     <div class="panel" id="panel-team">
 
@@ -1339,9 +1435,10 @@ const PANELS = {
   preview: { title: 'Preview & Save',   sub: 'Check the extracted questions before saving' },
   library: { title: 'Quiz Library',     sub: 'All saved quizzes' },
   bank:    { title: 'Question Bank',    sub: 'All questions across all quizzes' },
-  assignments: { title: 'Assignments', sub: 'Assign quizzes to classes and view results' },
-  results:     { title: 'Results',     sub: 'View student performance across all assignments' },
-  team:        { title: 'Team',        sub: 'Manage subjects, teachers and access' },
+  assignments:  { title: 'Assignments',  sub: 'Assign quizzes to classes and view results' },
+  results:      { title: 'Results',      sub: 'View student performance across all assignments' },
+  classreport:  { title: 'Class Report', sub: 'Cross-assignment performance by class' },
+  team:         { title: 'Team',         sub: 'Manage subjects, teachers and access' },
 };
 
 function showPanel(name) {
@@ -1358,6 +1455,7 @@ function showPanel(name) {
   if (name === 'bank')        { loadBank(); }
   if (name === 'assignments') { loadAssignments(); }
   if (name === 'results')     { loadResultsPanel(); }
+  if (name === 'classreport') { loadClassReportList(); }
   if (name === 'team')        { loadTeam(); }
 }
 
@@ -3090,6 +3188,198 @@ function buildTopicSummary(results) {
 function closeResultDetail() {
   document.getElementById('results-list-view').style.display   = '';
   document.getElementById('results-detail-view').style.display = 'none';
+}
+
+// ─── Class Report panel ───────────────────────────────────────────────────────
+let _crClasses = [];  // [{class_name, assignments: [...], total_students}]
+
+async function loadClassReportList() {
+  document.getElementById('cr-list-view').style.display   = '';
+  document.getElementById('cr-detail-view').style.display = 'none';
+
+  const el = document.getElementById('cr-class-list');
+  el.innerHTML = '<div class="card-body" style="text-align:center;color:var(--ink-dim);font-size:13px">Loading…</div>';
+
+  try {
+    const res  = await fetch(apiBase() + '/api/assignments', { headers: authHeaders() });
+    if (res.status === 401) { clearSession(); showLogin(); return; }
+    const data = await res.json();
+    const assignments = data.assignments || [];
+
+    // Group by class_name
+    const byClass = {};
+    assignments.forEach(a => {
+      const cn = a.class_name;
+      if (!byClass[cn]) byClass[cn] = { class_name: cn, assignments: [] };
+      byClass[cn].assignments.push(a);
+    });
+
+    _crClasses = Object.values(byClass).sort((a, b) => a.class_name.localeCompare(b.class_name));
+
+    if (_crClasses.length === 0) {
+      el.innerHTML = '<div class="lib-empty"><div class="lib-empty-icon">📊</div>No assignments yet. Create assignments to see class reports.</div>';
+      return;
+    }
+
+    el.innerHTML = _crClasses.map(c => `
+      <div class="cr-class-btn" onclick="openCrDetail('${escHtml(c.class_name)}')">
+        <div>
+          <div class="cr-class-label">${escHtml(c.class_name)}</div>
+          <div class="cr-class-meta">${c.assignments.length} assignment${c.assignments.length !== 1 ? 's' : ''}</div>
+        </div>
+        <div style="font-size:12px;color:var(--ink-dim)">View report →</div>
+      </div>
+    `).join('');
+  } catch (err) {
+    el.innerHTML = `<div class="card-body" style="color:var(--red);font-size:13px">${err.message}</div>`;
+  }
+}
+
+async function openCrDetail(className) {
+  document.getElementById('cr-list-view').style.display   = 'none';
+  document.getElementById('cr-detail-view').style.display = '';
+
+  document.getElementById('cr-detail-title').textContent = `Class ${className}`;
+  document.getElementById('cr-summary-stats').innerHTML  = '<div style="color:var(--ink-dim);font-size:13px">Loading…</div>';
+  document.getElementById('cr-trend-body').innerHTML     = '<div style="color:var(--ink-dim);font-size:13px">Loading…</div>';
+  document.getElementById('cr-matrix-body').innerHTML    = '<div style="color:var(--ink-dim);font-size:13px;padding:1rem">Loading…</div>';
+  document.getElementById('cr-topics-body').innerHTML    = '';
+
+  try {
+    const res  = await fetch(apiBase() + `/api/class/${encodeURIComponent(className)}/report`, { headers: authHeaders() });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+
+    const { assignments, students, trend, topics } = data;
+
+    // ── Sub-header ─────────────────────────────────────────────────────────
+    const totalStudents = new Set(students.map(s => s.roll_number)).size;
+    const overallAvgs   = trend.filter(t => t.avg_percent !== null).map(t => t.avg_percent);
+    const overallAvg    = overallAvgs.length ? Math.round(overallAvgs.reduce((a, b) => a + b, 0) / overallAvgs.length) : null;
+    document.getElementById('cr-detail-sub').textContent =
+      `${assignments.length} assignment${assignments.length !== 1 ? 's' : ''} · ${totalStudents} student${totalStudents !== 1 ? 's' : ''}`;
+
+    // ── Summary stats ───────────────────────────────────────────────────────
+    const totalSubs = assignments.reduce((s, a) => s + a.submission_count, 0);
+    const color = overallAvg >= 80 ? 'var(--green)' : overallAvg >= 50 ? 'var(--amber)' : 'var(--red)';
+    document.getElementById('cr-summary-stats').innerHTML = `
+      <div class="stat-card"><div class="stat-val">${assignments.length}</div><div class="stat-label">Assignments</div></div>
+      <div class="stat-card"><div class="stat-val">${totalStudents}</div><div class="stat-label">Students</div></div>
+      <div class="stat-card"><div class="stat-val">${totalSubs}</div><div class="stat-label">Total submissions</div></div>
+      <div class="stat-card"><div class="stat-val" style="color:${color}">${overallAvg !== null ? overallAvg + '%' : '—'}</div><div class="stat-label">Overall avg</div></div>`;
+
+    // ── Trend bars ──────────────────────────────────────────────────────────
+    if (trend.length === 0 || trend.every(t => t.avg_percent === null)) {
+      document.getElementById('cr-trend-body').innerHTML =
+        '<div style="color:var(--ink-dim);font-size:13px">No submissions yet across any assignment.</div>';
+    } else {
+      document.getElementById('cr-trend-body').innerHTML = trend.map(t => {
+        const pct   = t.avg_percent;
+        const tcolor = pct >= 80 ? 'var(--green)' : pct >= 50 ? 'var(--amber)' : 'var(--red)';
+        const w     = pct !== null ? pct : 0;
+        const empty = pct === null;
+        return `
+          <div class="cr-trend-row">
+            <div class="cr-trend-label" title="${escHtml(t.quiz_title)}">${escHtml(t.quiz_title)}</div>
+            <div class="cr-trend-track">
+              <div class="cr-trend-fill" style="width:${w}%;background:${empty ? 'var(--surface-3)' : tcolor}"></div>
+            </div>
+            <div class="cr-trend-pct" style="color:${empty ? 'var(--ink-faint)' : tcolor}">${pct !== null ? pct + '%' : '—'}</div>
+            <div class="cr-trend-n">${t.submission_count} student${t.submission_count !== 1 ? 's' : ''}</div>
+          </div>`;
+      }).join('');
+    }
+
+    // ── Student matrix ──────────────────────────────────────────────────────
+    if (students.length === 0) {
+      document.getElementById('cr-matrix-body').innerHTML =
+        '<div style="color:var(--ink-dim);font-size:13px;padding:1rem">No submissions yet.</div>';
+    } else {
+      // Shorten quiz titles for column headers
+      const shortTitle = t => t.length > 18 ? t.slice(0, 16) + '…' : t;
+
+      const headerCols = assignments.map(a =>
+        `<th class="cr-assign-th" title="${escHtml(a.quiz_title)}">${escHtml(shortTitle(a.quiz_title))}</th>`
+      ).join('');
+
+      const studentRows = students.map(s => {
+        const attempted = Object.values(s.scores);
+        const avg = attempted.length
+          ? Math.round(attempted.reduce((a, b) => a + b, 0) / attempted.length)
+          : null;
+        const avgColor = avg !== null
+          ? (avg >= 80 ? 'var(--green)' : avg >= 50 ? 'var(--amber)' : 'var(--red)')
+          : 'var(--ink-faint)';
+
+        const scoreCells = assignments.map(a => {
+          const pct = s.scores[a.id];
+          if (pct === undefined) return `<td class="cr-score-cell" style="color:var(--ink-faint)">—</td>`;
+          const c = pct >= 80 ? 'var(--green)' : pct >= 50 ? 'var(--amber)' : 'var(--red)';
+          return `<td class="cr-score-cell"><span class="pct-badge ${pct >= 80 ? 'pct-high' : pct >= 50 ? 'pct-mid' : 'pct-low'}">${pct}%</span></td>`;
+        }).join('');
+
+        return `
+          <tr>
+            <td style="font-weight:500;color:var(--ink)">${escHtml(s.student_name)}</td>
+            <td style="color:var(--ink-dim)">${escHtml(s.roll_number)}</td>
+            ${scoreCells}
+            <td class="cr-avg-cell" style="color:${avgColor}">${avg !== null ? avg + '%' : '—'}</td>
+          </tr>`;
+      }).join('');
+
+      document.getElementById('cr-matrix-body').innerHTML = `
+        <table class="cr-matrix">
+          <thead>
+            <tr>
+              <th>Student</th>
+              <th>Roll</th>
+              ${headerCols}
+              <th style="text-align:center">Avg</th>
+            </tr>
+          </thead>
+          <tbody>${studentRows}</tbody>
+        </table>`;
+    }
+
+    // ── Topic rollup ────────────────────────────────────────────────────────
+    if (topics.length === 0) {
+      document.getElementById('cr-topics-body').innerHTML =
+        '<tr><td style="color:var(--ink-dim);font-size:13px;padding:1rem">No topic data yet.</td></tr>';
+    } else {
+      document.getElementById('cr-topics-body').innerHTML = `
+        <thead>
+          <tr>
+            <th>Topic</th><th>Avg %</th><th style="width:110px"></th>
+            <th>Correct</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${topics.map(t => {
+            const c = t.percent >= 80 ? 'var(--green)' : t.percent >= 50 ? 'var(--amber)' : 'var(--red)';
+            return `
+              <tr>
+                <td style="font-weight:500;color:var(--ink)">${escHtml(t.topic)}</td>
+                <td style="font-weight:700;color:${c}">${t.percent}%</td>
+                <td>
+                  <div class="mini-bar-track">
+                    <div class="mini-bar-fill" style="width:${t.percent}%;background:${c}"></div>
+                  </div>
+                </td>
+                <td style="color:var(--ink-dim)">${t.correct} / ${t.total}</td>
+              </tr>`;
+          }).join('')}
+        </tbody>`;
+    }
+
+  } catch (err) {
+    document.getElementById('cr-summary-stats').innerHTML =
+      `<div style="color:var(--red);font-size:13px">${err.message}</div>`;
+  }
+}
+
+function closeCrDetail() {
+  document.getElementById('cr-list-view').style.display   = '';
+  document.getElementById('cr-detail-view').style.display = 'none';
 }
 
 // ─── Results tab switching ────────────────────────────────────────────────────

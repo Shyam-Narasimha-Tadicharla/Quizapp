@@ -2053,6 +2053,129 @@ def get_assignment_analytics(assignment_id: str):
     })
 
 
+@app.route("/api/class/<class_name>/report", methods=["GET"])
+@require_auth
+def get_class_report(class_name: str):
+    """
+    Cross-assignment report for a class code.
+    Returns:
+      - assignments: [{id, quiz_title, created_at, avg_percent, submission_count}]
+      - students: [{roll_number, student_name, scores: {assignment_id: percent|null}}]
+      - trend: [{assignment_id, quiz_title, created_at, avg_percent}]  — chronological
+      - topics: [{topic, percent, correct, total}]  — weakest first, across all assignments
+    """
+    with Session(_engine) as session:
+        assignments = session.execute(
+            select(Assignment, Quiz.title)
+            .outerjoin(Quiz, Quiz.id == Assignment.quiz_id)
+            .where(Assignment.school_id == g.school_id)
+            .where(func.lower(Assignment.class_name) == class_name.strip().lower())
+            .order_by(Assignment.created_at.asc())
+        ).all()
+
+        if not assignments:
+            return jsonify({"error": f"No assignments found for class '{class_name}'."}), 404
+
+        assignment_ids = [a.id for a, _ in assignments]
+
+        # Load all complete results for all assignments in one query
+        all_results = session.execute(
+            select(Result)
+            .where(Result.assignment_id.in_(assignment_ids))
+            .where(Result.is_complete == True)  # noqa: E712
+        ).scalars().all()
+
+        # Load all topic scores for those results
+        result_ids = [r.id for r in all_results]
+        all_topic_scores = session.execute(
+            select(ResultTopicScore)
+            .where(ResultTopicScore.result_id.in_(result_ids))
+        ).scalars().all() if result_ids else []
+
+        # Index results by assignment_id
+        results_by_assignment: dict = {}
+        for r in all_results:
+            results_by_assignment.setdefault(r.assignment_id, []).append(r)
+
+        # Index topic scores by result_id
+        topics_by_result: dict = {}
+        for ts in all_topic_scores:
+            topics_by_result.setdefault(ts.result_id, []).append(ts)
+
+        # ── Per-assignment summaries ──────────────────────────────────────────
+        assignments_out = []
+        for a, quiz_title in assignments:
+            results = results_by_assignment.get(a.id, [])
+            n = len(results)
+            avg_pct = round(sum(r.score / r.total * 100 if r.total else 0 for r in results) / n) if n else None
+            assignments_out.append({
+                "id":               a.id,
+                "quiz_title":       quiz_title or "Live paper",
+                "created_at":       a.created_at.isoformat(),
+                "avg_percent":      avg_pct,
+                "submission_count": n,
+            })
+
+        # ── Per-student matrix ────────────────────────────────────────────────
+        # Identify unique students by (roll_number, name) — last-seen name wins
+        student_map: dict = {}  # roll_number -> {student_name, scores: {aid: pct}}
+        for a, _ in assignments:
+            for r in results_by_assignment.get(a.id, []):
+                key = r.roll_number
+                if key not in student_map:
+                    student_map[key] = {"roll_number": key, "student_name": r.student_name, "scores": {}}
+                else:
+                    student_map[key]["student_name"] = r.student_name  # latest name
+                pct = round(r.score / r.total * 100) if r.total else 0
+                student_map[key]["scores"][a.id] = pct
+
+        # Sort students by average across attempted assignments, then name
+        def _avg_score(s):
+            vals = list(s["scores"].values())
+            return -(sum(vals) / len(vals)) if vals else 0
+
+        students_out = sorted(student_map.values(), key=lambda s: (_avg_score(s), s["student_name"]))
+
+        # ── Class trend ───────────────────────────────────────────────────────
+        trend_out = [
+            {
+                "assignment_id": a.id,
+                "quiz_title":    quiz_title or "Live paper",
+                "created_at":    a.created_at.isoformat(),
+                "avg_percent":   ao["avg_percent"],
+                "submission_count": ao["submission_count"],
+            }
+            for (a, quiz_title), ao in zip(assignments, assignments_out)
+        ]
+
+        # ── Rolled-up topic performance ───────────────────────────────────────
+        topic_acc: dict = {}
+        for ts in all_topic_scores:
+            t = ts.topic or "Untagged"
+            if t not in topic_acc:
+                topic_acc[t] = {"correct": 0, "total": 0}
+            topic_acc[t]["correct"] += ts.correct
+            topic_acc[t]["total"]   += ts.total
+
+        topics_out = sorted([
+            {
+                "topic":   t,
+                "correct": v["correct"],
+                "total":   v["total"],
+                "percent": round(v["correct"] / v["total"] * 100) if v["total"] else 0,
+            }
+            for t, v in topic_acc.items()
+        ], key=lambda x: x["percent"])  # weakest first
+
+    return jsonify({
+        "class_name":  class_name,
+        "assignments": assignments_out,
+        "students":    students_out,
+        "trend":       trend_out,
+        "topics":      topics_out,
+    })
+
+
 # ─── Routes — Student take (public) ───────────────────────────────────────────
 
 @app.route("/take", methods=["GET"])
