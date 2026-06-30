@@ -23,6 +23,7 @@ Protected routes (JWT required)
 import os
 import re
 import uuid
+import random
 import logging
 import functools
 from datetime import datetime, timezone
@@ -37,7 +38,7 @@ import fitz  # PyMuPDF
 import jwt as pyjwt
 from sqlalchemy import create_engine, select, func, text
 from sqlalchemy.orm import Session
-from models import School, User, Quiz, Question, QuizQuestion, Subject, SubjectTopic, UserSubject, Assignment, Result, Answer
+from models import School, User, Quiz, Question, QuizQuestion, Subject, SubjectTopic, UserSubject, Assignment, Result, Answer, ResultTopicScore
 
 # ─── App setup ────────────────────────────────────────────────────────────────
 
@@ -832,6 +833,112 @@ def _allowed_topics_for_user(session, user) -> list[str] | None:
     return list(topic_rows)
 
 
+def _pick_questions_by_rules(session, school_id: str, topic_rules: list) -> list:
+    """
+    Pick questions from the bank according to topic_rules [{topic, count}].
+    Returns a randomly-ordered flat list of Question ORM objects.
+    Raises ValueError if any topic has fewer available questions than requested.
+    """
+    picked = []
+    for rule in topic_rules:
+        topic = rule.get("topic", "").strip()
+        count = int(rule.get("count", 0))
+        if count <= 0:
+            continue
+        rows = session.execute(
+            select(Question)
+            .where(Question.school_id == school_id)
+            .where(Question.topic == topic)
+            .where(Question.deleted_at.is_(None))
+        ).scalars().all()
+        if len(rows) < count:
+            raise ValueError(
+                f"Topic '{topic}' only has {len(rows)} question(s) but {count} were requested."
+            )
+        picked.extend(random.sample(rows, count))
+    random.shuffle(picked)
+    return picked
+
+
+def _apply_shuffles(questions: list, randomize_questions: bool, randomize_options: bool):
+    """
+    Given a list of Question ORM objects, apply shuffles and return
+    (ordered_questions, question_order, option_orders).
+
+    question_order: [question_id, ...]  — IDs in the display order
+    option_orders:  {question_id: [original_idx, ...]}  — maps display slot → original index
+    """
+    if randomize_questions:
+        random.shuffle(questions)
+
+    question_order = [q.id for q in questions]
+    option_orders  = {}
+
+    if randomize_options:
+        for q in questions:
+            indices = list(range(len(q.options)))
+            random.shuffle(indices)
+            option_orders[q.id] = indices
+    else:
+        for q in questions:
+            option_orders[q.id] = list(range(len(q.options)))
+
+    return questions, question_order, option_orders
+
+
+def _serialize_questions_for_student(questions: list, option_orders: dict) -> list:
+    """
+    Serialize Question ORM objects for the student-facing take API.
+    Applies option shuffle according to option_orders.
+    correct_index is intentionally excluded.
+    """
+    out = []
+    for q in questions:
+        order = option_orders.get(q.id, list(range(len(q.options))))
+        out.append({
+            "id":      q.id,
+            "text":    q.text,
+            "options": [q.options[i] for i in order],
+            "topic":   q.topic,
+        })
+    return out
+
+
+@app.route("/api/quiz/generate-from-rules", methods=["POST"])
+@require_auth
+def generate_quiz_from_rules():
+    """
+    Mode 2 helper — generate a preview paper from topic_rules without saving it.
+    Teachers call this repeatedly (reroll) and then confirm via POST /api/quiz/from-bank.
+
+    Body: { topic_rules: [{topic, count}, ...] }
+    Returns: { questions: [{id, text, options, topic}, ...] }  — correct_index included (admin preview)
+    """
+    body        = request.get_json(silent=True) or {}
+    topic_rules = body.get("topic_rules")
+    if not isinstance(topic_rules, list) or len(topic_rules) == 0:
+        return jsonify({"error": "'topic_rules' must be a non-empty array."}), 400
+
+    with Session(_engine) as session:
+        try:
+            questions = _pick_questions_by_rules(session, g.school_id, topic_rules)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 422
+
+    return jsonify({
+        "questions": [
+            {
+                "id":            q.id,
+                "text":          q.text,
+                "options":       q.options,
+                "correct_index": q.correct_index,
+                "topic":         q.topic,
+            }
+            for q in questions
+        ]
+    })
+
+
 @app.route("/api/questions", methods=["GET"])
 @require_auth
 def get_questions():
@@ -1416,20 +1523,23 @@ def list_assignments():
     with Session(_engine) as session:
         rows = session.execute(
             select(Assignment, Quiz.title)
-            .join(Quiz, Quiz.id == Assignment.quiz_id)
+            .outerjoin(Quiz, Quiz.id == Assignment.quiz_id)
             .where(Assignment.school_id == g.school_id)
             .order_by(Assignment.created_at.desc())
         ).all()
 
     return jsonify({"assignments": [
         {
-            "id":         a.id,
-            "class_name": a.class_name,
-            "quiz_id":    a.quiz_id,
-            "quiz_title": title,
-            "opens_at":   a.opens_at.isoformat()  if a.opens_at  else None,
-            "closes_at":  a.closes_at.isoformat() if a.closes_at else None,
-            "created_at": a.created_at.isoformat(),
+            "id":                   a.id,
+            "class_name":           a.class_name,
+            "quiz_id":              a.quiz_id,
+            "quiz_title":           title,
+            "mode":                 a.mode,
+            "randomize_questions":  a.randomize_questions,
+            "randomize_options":    a.randomize_options,
+            "opens_at":             a.opens_at.isoformat()  if a.opens_at  else None,
+            "closes_at":            a.closes_at.isoformat() if a.closes_at else None,
+            "created_at":           a.created_at.isoformat(),
         }
         for a, title in rows
     ]})
@@ -1438,23 +1548,38 @@ def list_assignments():
 @app.route("/api/assignments", methods=["POST"])
 @require_auth
 def create_assignment():
-    """Create an assignment linking a quiz to a class name. Teacher or admin."""
-    body       = request.get_json(silent=True) or {}
-    quiz_id    = (body.get("quiz_id")    or "").strip()
-    class_name = (body.get("class_name") or "").strip()
-    opens_at   = body.get("opens_at")
-    closes_at  = body.get("closes_at")
+    """
+    Create an assignment. Supports three modes:
+      manual       — quiz_id required; uses a pre-built quiz as-is
+      randomized   — quiz_id required; quiz was pre-built via generate-from-rules
+      total_random — topic_rules required; no quiz_id; paper generated live per student
+    """
+    body                 = request.get_json(silent=True) or {}
+    quiz_id              = (body.get("quiz_id") or "").strip() or None
+    class_name           = (body.get("class_name") or "").strip()
+    opens_at             = body.get("opens_at")
+    closes_at            = body.get("closes_at")
+    mode                 = (body.get("mode") or "manual").strip().lower()
+    randomize_questions  = bool(body.get("randomize_questions", False))
+    randomize_options    = bool(body.get("randomize_options",   False))
+    topic_rules          = body.get("topic_rules")  # [{topic, count}]
 
-    if not quiz_id or not class_name:
-        return jsonify({"error": "quiz_id and class_name are required."}), 400
+    if mode not in ("manual", "randomized", "total_random"):
+        return jsonify({"error": "mode must be 'manual', 'randomized', or 'total_random'."}), 400
+    if not class_name:
+        return jsonify({"error": "class_name is required."}), 400
+    if mode in ("manual", "randomized") and not quiz_id:
+        return jsonify({"error": "quiz_id is required for manual and randomized modes."}), 400
+    if mode == "total_random":
+        if not isinstance(topic_rules, list) or len(topic_rules) == 0:
+            return jsonify({"error": "topic_rules is required for total_random mode."}), 400
+        quiz_id = None  # explicitly no quiz for live-generated papers
 
     def _parse_dt(val, end_of_day=False):
         if not val:
             return None
         try:
             dt = datetime.fromisoformat(val.replace("Z", "+00:00"))
-            # If no time component was provided (datetime-local gives "YYYY-MM-DDT00:00"),
-            # and this is a closing date, push it to end of day so "30 Jun" means all of 30 Jun.
             if end_of_day and dt.hour == 0 and dt.minute == 0 and dt.second == 0:
                 dt = dt.replace(hour=23, minute=59, second=59)
             return dt
@@ -1462,29 +1587,41 @@ def create_assignment():
             return None
 
     with Session(_engine) as session:
-        quiz = session.execute(
-            select(Quiz)
-            .where(Quiz.id == quiz_id)
-            .where(Quiz.school_id == g.school_id)
-        ).scalar_one_or_none()
-        if quiz is None:
-            return jsonify({"error": "Quiz not found."}), 404
+        if quiz_id:
+            quiz = session.execute(
+                select(Quiz)
+                .where(Quiz.id == quiz_id)
+                .where(Quiz.school_id == g.school_id)
+            ).scalar_one_or_none()
+            if quiz is None:
+                return jsonify({"error": "Quiz not found."}), 404
+
+        if mode == "total_random":
+            # Validate topic_rules against the bank now so the teacher knows immediately
+            try:
+                _pick_questions_by_rules(session, g.school_id, topic_rules)
+            except ValueError as exc:
+                return jsonify({"error": str(exc)}), 422
 
         a = Assignment(
-            id         = str(uuid.uuid4()),
-            school_id  = g.school_id,
-            quiz_id    = quiz_id,
-            created_by = g.user_id,
-            class_name = class_name,
-            opens_at   = _parse_dt(opens_at,  end_of_day=False),
-            closes_at  = _parse_dt(closes_at, end_of_day=True),
+            id                  = str(uuid.uuid4()),
+            school_id           = g.school_id,
+            quiz_id             = quiz_id,
+            created_by          = g.user_id,
+            class_name          = class_name,
+            opens_at            = _parse_dt(opens_at,  end_of_day=False),
+            closes_at           = _parse_dt(closes_at, end_of_day=True),
+            mode                = mode,
+            randomize_questions = randomize_questions,
+            randomize_options   = randomize_options,
+            topic_rules         = topic_rules,
         )
         session.add(a)
         session.commit()
         aid = a.id
 
-    log.info("Assignment created: class=%s quiz=%s school=%s", class_name, quiz_id, g.school_id)
-    return jsonify({"id": aid, "class_name": class_name, "quiz_id": quiz_id}), 201
+    log.info("Assignment created: class=%s mode=%s quiz=%s school=%s", class_name, mode, quiz_id, g.school_id)
+    return jsonify({"id": aid, "class_name": class_name, "quiz_id": quiz_id, "mode": mode}), 201
 
 
 @app.route("/api/assignments/<assignment_id>", methods=["DELETE"])
@@ -1563,7 +1700,8 @@ def take_page():
 @app.route("/api/take/<class_name>", methods=["GET"])
 def get_take_quiz(class_name: str):
     """
-    Public — student enters a class name, get back the active assignment's quiz.
+    Public — student enters a class name, gets back the active assignment's quiz.
+    Handles all three modes; applies shuffles if enabled.
     Does NOT include correct answers.
     """
     now = datetime.now(timezone.utc)
@@ -1575,8 +1713,6 @@ def get_take_quiz(class_name: str):
                 (Assignment.opens_at.is_(None)) | (Assignment.opens_at <= now)
             )
             .where(
-                # Treat closes_at as end-of-day: compare against start of that day
-                # so that "closes 30 Jun" means accessible all of 30 Jun.
                 (Assignment.closes_at.is_(None)) |
                 (func.date(Assignment.closes_at) >= func.date(now))
             )
@@ -1586,29 +1722,43 @@ def get_take_quiz(class_name: str):
         if a is None:
             return jsonify({"error": "No active assignment found for this class."}), 404
 
-        quiz = session.get(Quiz, a.quiz_id)
-        stmt = (
-            select(Question)
-            .join(QuizQuestion, QuizQuestion.question_id == Question.id)
-            .where(QuizQuestion.quiz_id == a.quiz_id)
-            .where(Question.deleted_at.is_(None))
-            .order_by(QuizQuestion.position)
+        if a.mode == "total_random":
+            # Live paper: pick questions fresh for this student from topic_rules
+            try:
+                questions = _pick_questions_by_rules(session, a.school_id, a.topic_rules or [])
+            except ValueError as exc:
+                return jsonify({"error": f"Assignment configuration error: {exc}"}), 500
+            quiz_title = "Quiz"  # no saved quiz for total_random
+        else:
+            # manual or randomized: load from the saved quiz
+            if not a.quiz_id:
+                return jsonify({"error": "Assignment has no quiz attached."}), 500
+            quiz = session.get(Quiz, a.quiz_id)
+            if quiz is None:
+                return jsonify({"error": "Quiz not found."}), 404
+            quiz_title = quiz.title
+            stmt = (
+                select(Question)
+                .join(QuizQuestion, QuizQuestion.question_id == Question.id)
+                .where(QuizQuestion.quiz_id == a.quiz_id)
+                .where(Question.deleted_at.is_(None))
+                .order_by(QuizQuestion.position)
+            )
+            questions = list(session.execute(stmt).scalars().all())
+
+        questions, question_order, option_orders = _apply_shuffles(
+            questions,
+            randomize_questions = a.randomize_questions,
+            randomize_options   = a.randomize_options,
         )
-        questions = session.execute(stmt).scalars().all()
 
     return jsonify({
-        "assignment_id": a.id,
-        "quiz_title":    quiz.title,
-        "class_name":    a.class_name,
-        "questions": [
-            {
-                "id":      q.id,
-                "text":    q.text,
-                "options": q.options,
-                # correct_index intentionally omitted
-            }
-            for q in questions
-        ],
+        "assignment_id":  a.id,
+        "quiz_title":     quiz_title,
+        "class_name":     a.class_name,
+        "question_order": question_order,
+        "option_orders":  option_orders,
+        "questions":      _serialize_questions_for_student(questions, option_orders),
     })
 
 
@@ -1616,13 +1766,20 @@ def get_take_quiz(class_name: str):
 def submit_quiz(class_name: str):
     """
     Public — student submits their answers.
-    Body: { assignment_id, student_name, roll_number, answers: [{question_id, chosen_index}] }
+    Body: {
+      assignment_id, student_name, roll_number,
+      question_order: [id, ...],
+      option_orders:  {id: [original_idx, ...]},
+      answers: [{question_id, chosen_index}]   ← chosen_index is in display (shuffled) space
+    }
     """
-    body          = request.get_json(silent=True) or {}
-    assignment_id = (body.get("assignment_id") or "").strip()
-    student_name  = (body.get("student_name")  or "").strip()
-    roll_number   = (body.get("roll_number")   or "").strip()
-    raw_answers   = body.get("answers", [])
+    body           = request.get_json(silent=True) or {}
+    assignment_id  = (body.get("assignment_id") or "").strip()
+    student_name   = (body.get("student_name")  or "").strip()
+    roll_number    = (body.get("roll_number")   or "").strip()
+    raw_answers    = body.get("answers", [])
+    question_order = body.get("question_order") or []
+    option_orders  = body.get("option_orders")  or {}
 
     if not assignment_id or not student_name or not roll_number:
         return jsonify({"error": "assignment_id, student_name, and roll_number are required."}), 400
@@ -1641,33 +1798,65 @@ def submit_quiz(class_name: str):
         if a is None:
             return jsonify({"error": "Assignment not found."}), 404
 
-        from sqlalchemy import cast, Date as SADate
         if a.closes_at and a.closes_at.date() < now.date():
             return jsonify({"error": "This assignment has closed."}), 403
 
-        # Load correct answers for scoring
-        q_rows = session.execute(
-            select(Question)
-            .join(QuizQuestion, QuizQuestion.question_id == Question.id)
-            .where(QuizQuestion.quiz_id == a.quiz_id)
-            .where(Question.deleted_at.is_(None))
-        ).scalars().all()
-        correct_map = {q.id: q.correct_index for q in q_rows}
+        # Load all questions for this assignment (across all modes)
+        if a.mode == "total_random":
+            # For total_random we don't have a saved quiz; question IDs come from the
+            # submitted question_order (what the server sent the student).
+            q_ids = [qid for qid in question_order if qid]
+            q_rows = session.execute(
+                select(Question)
+                .where(Question.id.in_(q_ids))
+                .where(Question.school_id == a.school_id)
+                .where(Question.deleted_at.is_(None))
+            ).scalars().all()
+        else:
+            q_rows = session.execute(
+                select(Question)
+                .join(QuizQuestion, QuizQuestion.question_id == Question.id)
+                .where(QuizQuestion.quiz_id == a.quiz_id)
+                .where(Question.deleted_at.is_(None))
+            ).scalars().all()
 
-        score = 0
-        answer_objs = []
+        correct_map  = {q.id: q.correct_index for q in q_rows}
+        topic_map    = {q.id: q.topic          for q in q_rows}
+
+        score        = 0
+        answer_objs  = []
+        # Per-topic accumulators: {topic: {"correct": n, "total": n}}
+        topic_acc    = {}
+
         for ans in raw_answers:
-            qid    = ans.get("question_id", "")
-            chosen = ans.get("chosen_index")
-            if chosen is None or qid not in correct_map:
+            qid            = ans.get("question_id", "")
+            display_chosen = ans.get("chosen_index")
+            if display_chosen is None or qid not in correct_map:
                 continue
+
+            # Map display index back to original index using option_orders
+            display_chosen = int(display_chosen)
+            order = option_orders.get(qid)
+            if order and len(order) > display_chosen:
+                original_chosen = order[display_chosen]
+            else:
+                original_chosen = display_chosen
+
             correct    = correct_map[qid]
-            is_correct = (int(chosen) == correct)
+            is_correct = (original_chosen == correct)
             if is_correct:
                 score += 1
+
+            topic = topic_map.get(qid) or "Untagged"
+            if topic not in topic_acc:
+                topic_acc[topic] = {"correct": 0, "total": 0}
+            topic_acc[topic]["total"]   += 1
+            if is_correct:
+                topic_acc[topic]["correct"] += 1
+
             answer_objs.append({
                 "question_id":  qid,
-                "chosen_index": int(chosen),
+                "chosen_index": original_chosen,   # store in original index space
                 "is_correct":   is_correct,
             })
 
@@ -1675,14 +1864,16 @@ def submit_quiz(class_name: str):
         result_id = str(uuid.uuid4())
 
         result = Result(
-            id            = result_id,
-            assignment_id = assignment_id,
-            student_name  = student_name,
-            roll_number   = roll_number,
-            class_name    = a.class_name,
-            score         = score,
-            total         = total,
-            submitted_at  = now,
+            id             = result_id,
+            assignment_id  = assignment_id,
+            student_name   = student_name,
+            roll_number    = roll_number,
+            class_name     = a.class_name,
+            score          = score,
+            total          = total,
+            submitted_at   = now,
+            question_order = question_order or None,
+            option_orders  = option_orders  or None,
         )
         session.add(result)
 
@@ -1695,17 +1886,27 @@ def submit_quiz(class_name: str):
                 is_correct   = ans["is_correct"],
             ))
 
+        for topic, counts in topic_acc.items():
+            session.add(ResultTopicScore(
+                id        = str(uuid.uuid4()),
+                result_id = result_id,
+                topic     = topic,
+                correct   = counts["correct"],
+                total     = counts["total"],
+            ))
+
         session.commit()
 
     log.info("Quiz submitted: student=%s roll=%s class=%s score=%d/%d",
              student_name, roll_number, class_name, score, total)
 
+    # Return correct answers in original index space so take.html can display correctly
     return jsonify({
-        "score":   score,
-        "total":   total,
-        "percent": round(score / total * 100) if total else 0,
-        # Return correct answers so the student can see what they got wrong
+        "score":           score,
+        "total":           total,
+        "percent":         round(score / total * 100) if total else 0,
         "correct_answers": {qid: idx for qid, idx in correct_map.items()},
+        "option_orders":   option_orders,
     }), 201
 
 

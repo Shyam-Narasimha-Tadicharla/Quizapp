@@ -1892,22 +1892,36 @@ async function loadAssignments() {
       return;
     }
 
+    const modeBadge = m => {
+      if (m === 'total_random') return `<span style="font-size:10px;padding:1px 7px;border-radius:99px;background:rgba(251,191,36,.15);color:var(--amber);font-weight:600">⚡ live random</span>`;
+      if (m === 'randomized')   return `<span style="font-size:10px;padding:1px 7px;border-radius:99px;background:rgba(123,110,246,.15);color:var(--accent-hi);font-weight:600">🎲 randomized</span>`;
+      return '';
+    };
+    const shuffleBadge = a =>
+      (a.randomize_questions || a.randomize_options)
+        ? `<span style="font-size:10px;color:var(--ink-dim)"> · shuffle${a.randomize_questions && a.randomize_options ? ' Q+A' : a.randomize_questions ? ' Q' : ' A'}</span>`
+        : '';
+
     body.innerHTML = _assignments.map(a => `
       <div class="assign-row">
         <div>
-          <div style="font-weight:500;color:var(--ink)">${escHtml(a.quiz_title)}</div>
+          <div style="font-weight:500;color:var(--ink)">
+            ${a.mode === 'total_random' ? '<em style="color:var(--ink-dim)">Live paper</em>' : escHtml(a.quiz_title || '—')}
+            ${modeBadge(a.mode)}
+            ${shuffleBadge(a)}
+          </div>
           <div class="assign-meta">
             <span class="assign-class">${escHtml(a.class_name)}</span>
             ${a.closes_at ? ` · closes ${fmtDate(a.closes_at)}` : ' · no expiry'}
           </div>
         </div>
-        <button class="btn btn-sm btn-ghost" onclick="viewResults('${a.id}','${escHtml(a.quiz_title)}','${escHtml(a.class_name)}')">
+        <button class="btn btn-sm btn-ghost" onclick="viewResults('${a.id}','${escHtml(a.quiz_title || a.class_name)}','${escHtml(a.class_name)}')">
           📊 Results
         </button>
         <button class="btn btn-sm btn-ghost" onclick="copyTakeLink('${escHtml(a.class_name)}')" title="Copy student link">
           🔗 Link
         </button>
-        ${isAdmin() ? `<button class="btn btn-sm btn-ghost" onclick="confirmDeleteAssignment('${a.id}','${escHtml(a.quiz_title)}')" style="color:var(--red)">✕</button>` : ''}
+        ${isAdmin() ? `<button class="btn btn-sm btn-ghost" onclick="confirmDeleteAssignment('${a.id}','${escHtml(a.quiz_title || a.class_name)}')" style="color:var(--red)">✕</button>` : ''}
       </div>
     `).join('');
   } catch (err) {
@@ -1915,48 +1929,229 @@ async function loadAssignments() {
   }
 }
 
+// ─── Assignment creation (multi-mode) ─────────────────────────────────────────
+let _mode2Questions = [];   // preview paper for mode 2 reroll/confirm
+
 function openCreateAssignment() {
-  // Need quiz list — use cached _quizMeta or fetch
   const quizOptions = Object.entries(window._quizMeta || {})
     .map(([id, title]) => `<option value="${id}">${escHtml(title)}</option>`).join('');
 
   document.getElementById('modal-title').textContent = 'New assignment';
-  document.getElementById('modal-body').innerHTML =
-    '<div style="display:flex;flex-direction:column;gap:10px">' +
-    '<div><div style="font-size:12px;color:var(--ink-dim);margin-bottom:4px">Quiz</div>' +
-    `<select class="inline-input" id="assign-quiz" style="width:100%">${quizOptions || '<option value="">No quizzes yet</option>'}</select></div>` +
-    '<div><div style="font-size:12px;color:var(--ink-dim);margin-bottom:4px">Class code (students enter this)</div>' +
-    '<input class="inline-input" id="assign-class" placeholder="e.g. 10A or ScienceGrade8" style="width:100%"/></div>' +
-    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">' +
-    '<div><div style="font-size:12px;color:var(--ink-dim);margin-bottom:4px">Opens (optional)</div>' +
-    '<input class="inline-input" type="datetime-local" id="assign-opens"/></div>' +
-    '<div><div style="font-size:12px;color:var(--ink-dim);margin-bottom:4px">Closes (optional)</div>' +
-    '<input class="inline-input" type="datetime-local" id="assign-closes"/></div></div>' +
-    '</div>';
+  document.getElementById('modal-body').innerHTML = `
+    <div style="display:flex;flex-direction:column;gap:12px">
+      <div>
+        <div style="font-size:12px;color:var(--ink-dim);margin-bottom:4px">Mode</div>
+        <select class="inline-input" id="assign-mode" style="width:100%" onchange="onAssignModeChange()">
+          <option value="manual">Manual — pick an existing quiz</option>
+          <option value="randomized">Randomized — generate paper by topic, fix for all students</option>
+          <option value="total_random">Total random — generate a fresh paper per student</option>
+        </select>
+      </div>
+
+      <!-- Mode 1 & 2: quiz picker -->
+      <div id="assign-quiz-row">
+        <div style="font-size:12px;color:var(--ink-dim);margin-bottom:4px">Quiz</div>
+        <select class="inline-input" id="assign-quiz" style="width:100%">${quizOptions || '<option value="">No quizzes yet</option>'}</select>
+      </div>
+
+      <!-- Mode 2 & 3: topic rules builder -->
+      <div id="assign-rules-row" style="display:none">
+        <div style="font-size:12px;color:var(--ink-dim);margin-bottom:6px">Topic rules — how many questions from each topic</div>
+        <div id="assign-rules-list" style="display:flex;flex-direction:column;gap:6px"></div>
+        <button class="btn btn-sm btn-ghost" onclick="addTopicRule()" style="margin-top:6px;font-size:12px">+ Add topic</button>
+      </div>
+
+      <!-- Mode 2: generate/reroll preview -->
+      <div id="assign-generate-row" style="display:none">
+        <button class="btn btn-sm" onclick="generatePaper()" id="assign-gen-btn"
+          style="background:var(--surface-3);border-color:var(--border-hi)">
+          Generate paper preview
+        </button>
+        <div id="assign-preview-area" style="margin-top:8px;font-size:12px;color:var(--ink-dim)"></div>
+      </div>
+
+      <div>
+        <div style="font-size:12px;color:var(--ink-dim);margin-bottom:4px">Class code (students enter this)</div>
+        <input class="inline-input" id="assign-class" placeholder="e.g. 10A or ScienceGrade8" style="width:100%"/>
+      </div>
+
+      <div style="display:flex;gap:12px;flex-wrap:wrap">
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer">
+          <input type="checkbox" id="assign-rq" style="accent-color:var(--accent)"/>
+          Shuffle question order
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer">
+          <input type="checkbox" id="assign-ro" style="accent-color:var(--accent)"/>
+          Shuffle answer options
+        </label>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        <div>
+          <div style="font-size:12px;color:var(--ink-dim);margin-bottom:4px">Opens (optional)</div>
+          <input class="inline-input" type="datetime-local" id="assign-opens"/>
+        </div>
+        <div>
+          <div style="font-size:12px;color:var(--ink-dim);margin-bottom:4px">Closes (optional)</div>
+          <input class="inline-input" type="datetime-local" id="assign-closes"/>
+        </div>
+      </div>
+    </div>`;
+
   document.getElementById('modal-quiz-list').innerHTML = '';
   document.getElementById('modal-confirm-btn').textContent = 'Create';
   document.getElementById('modal-confirm-btn').style.cssText = 'background:var(--accent);border-color:var(--accent);color:#fff';
-  _modalAction = async () => {
-    const quiz_id    = document.getElementById('assign-quiz').value;
-    const class_name = document.getElementById('assign-class').value.trim();
-    const opens_at   = document.getElementById('assign-opens').value  || null;
-    const closes_at  = document.getElementById('assign-closes').value || null;
-    if (!quiz_id)    { toast('Select a quiz.', 'err'); return; }
-    if (!class_name) { toast('Class code is required.', 'err'); return; }
-    closeModal();
-    try {
-      const res  = await fetch(apiBase() + '/api/assignments', {
-        method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({ quiz_id, class_name, opens_at, closes_at }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
-      toast(`Assignment "${class_name}" created.`, 'ok');
-      loadAssignments();
-    } catch (err) { toast(err.message, 'err'); }
-  };
+
+  _mode2Questions = [];
+  // Seed one topic rule row
+  addTopicRule();
+
+  _modalAction = submitCreateAssignment;
   document.getElementById('generic-modal').classList.add('open');
-  setTimeout(() => document.getElementById('assign-class') && document.getElementById('assign-class').focus(), 50);
+  setTimeout(() => {
+    const cl = document.getElementById('assign-class');
+    if (cl) cl.focus();
+  }, 50);
+}
+
+function onAssignModeChange() {
+  const mode = document.getElementById('assign-mode').value;
+  document.getElementById('assign-quiz-row').style.display      = (mode === 'manual' || mode === 'randomized') ? '' : 'none';
+  document.getElementById('assign-rules-row').style.display     = (mode === 'randomized' || mode === 'total_random') ? '' : 'none';
+  document.getElementById('assign-generate-row').style.display  = (mode === 'randomized') ? '' : 'none';
+  _mode2Questions = [];
+  document.getElementById('assign-preview-area') &&
+    (document.getElementById('assign-preview-area').innerHTML = '');
+}
+
+function addTopicRule() {
+  // Collect known topics from bank (already loaded into _bankQuestions)
+  const knownTopics = [...new Set(_bankQuestions.map(q => q.topic).filter(Boolean))].sort();
+  const topicOpts   = knownTopics.map(t => `<option value="${escHtml(t)}">${escHtml(t)}</option>`).join('');
+  const list        = document.getElementById('assign-rules-list');
+  if (!list) return;
+
+  const row = document.createElement('div');
+  row.style.cssText = 'display:flex;gap:6px;align-items:center';
+  row.innerHTML = `
+    <select class="inline-input" style="flex:2;font-size:13px">
+      ${topicOpts || '<option value="">No topics yet — upload questions first</option>'}
+    </select>
+    <input type="number" class="inline-input" min="1" max="100" value="5"
+      style="flex:0 0 70px;font-size:13px" placeholder="Count"/>
+    <button class="btn btn-ghost btn-sm" onclick="this.closest('div').remove()" style="flex-shrink:0">✕</button>`;
+  list.appendChild(row);
+}
+
+function getTopicRules() {
+  const rows = document.querySelectorAll('#assign-rules-list > div');
+  const rules = [];
+  rows.forEach(row => {
+    const sel   = row.querySelector('select');
+    const input = row.querySelector('input[type=number]');
+    if (!sel || !input) return;
+    const topic = sel.value.trim();
+    const count = parseInt(input.value, 10);
+    if (topic && count > 0) rules.push({ topic, count });
+  });
+  return rules;
+}
+
+async function generatePaper() {
+  const rules = getTopicRules();
+  if (rules.length === 0) { toast('Add at least one topic rule.', 'err'); return; }
+
+  const btn     = document.getElementById('assign-gen-btn');
+  const preview = document.getElementById('assign-preview-area');
+  btn.disabled  = true;
+  btn.textContent = 'Generating…';
+  preview.innerHTML = '';
+
+  try {
+    const res  = await fetch(apiBase() + '/api/quiz/generate-from-rules', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ topic_rules: rules }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+
+    _mode2Questions = data.questions || [];
+    preview.innerHTML =
+      `<div style="color:var(--green);margin-bottom:6px;font-weight:600">${_mode2Questions.length} questions generated</div>` +
+      _mode2Questions.map((q, i) =>
+        `<div style="padding:4px 0;border-bottom:1px solid var(--border)">
+          <span style="color:var(--accent-hi);font-size:11px">${escHtml(q.topic || 'Untagged')}</span>
+          <span style="margin-left:6px">${escHtml(q.text.slice(0, 80))}${q.text.length > 80 ? '…' : ''}</span>
+        </div>`
+      ).join('') +
+      `<div style="margin-top:6px;color:var(--ink-dim)">Not happy? Click Generate again to reroll.</div>`;
+  } catch (err) {
+    preview.innerHTML = `<span style="color:var(--red)">${err.message}</span>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Reroll paper';
+  }
+}
+
+async function submitCreateAssignment() {
+  const mode       = document.getElementById('assign-mode').value;
+  const class_name = (document.getElementById('assign-class').value || '').trim();
+  const opens_at   = document.getElementById('assign-opens').value  || null;
+  const closes_at  = document.getElementById('assign-closes').value || null;
+  const rq         = document.getElementById('assign-rq').checked;
+  const ro         = document.getElementById('assign-ro').checked;
+
+  if (!class_name) { toast('Class code is required.', 'err'); return; }
+
+  let quiz_id    = null;
+  let topic_rules = null;
+
+  if (mode === 'manual') {
+    quiz_id = document.getElementById('assign-quiz').value;
+    if (!quiz_id) { toast('Select a quiz.', 'err'); return; }
+
+  } else if (mode === 'randomized') {
+    // Mode 2: save the generated paper as a quiz first, then assign it
+    if (_mode2Questions.length === 0) {
+      toast('Generate a paper preview first.', 'err'); return;
+    }
+    const title = `Generated — ${class_name}`;
+    try {
+      const saveRes = await fetch(apiBase() + '/api/quiz/from-bank', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ title, question_ids: _mode2Questions.map(q => q.id) }),
+      });
+      const saveData = await saveRes.json();
+      if (!saveRes.ok) throw new Error(saveData.error);
+      quiz_id     = saveData.id;
+      topic_rules = getTopicRules();
+    } catch (err) { toast(err.message, 'err'); return; }
+
+  } else {
+    // total_random
+    topic_rules = getTopicRules();
+    if (topic_rules.length === 0) { toast('Add at least one topic rule.', 'err'); return; }
+  }
+
+  closeModal();
+  try {
+    const res  = await fetch(apiBase() + '/api/assignments', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({
+        quiz_id, class_name, opens_at, closes_at,
+        mode, topic_rules,
+        randomize_questions: rq,
+        randomize_options:   ro,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    toast(`Assignment "${class_name}" created.`, 'ok');
+    loadAssignments();
+    loadLibrary();  // mode 2 saves a new quiz
+  } catch (err) { toast(err.message, 'err'); }
 }
 
 function confirmDeleteAssignment(id, title) {

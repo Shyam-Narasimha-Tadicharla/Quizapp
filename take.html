@@ -253,10 +253,10 @@
 
 <script>
 // ── State ─────────────────────────────────────────────────────────────────────
-let _assignment = null;   // { assignment_id, quiz_title, class_name, questions[] }
-let _studentName = '';
-let _rollNumber  = '';
-let _answers     = {};    // question_id → chosen_index
+let _assignment    = null;   // { assignment_id, quiz_title, class_name, questions[], question_order, option_orders }
+let _studentName   = '';
+let _rollNumber    = '';
+let _answers       = {};     // question_id → chosen display index
 
 function apiBase() {
   return window.location.origin;
@@ -387,16 +387,18 @@ async function submitQuiz() {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({
-        assignment_id: _assignment.assignment_id,
-        student_name:  _studentName,
-        roll_number:   _rollNumber,
-        answers:       answersPayload,
+        assignment_id:  _assignment.assignment_id,
+        student_name:   _studentName,
+        roll_number:    _rollNumber,
+        question_order: _assignment.question_order || [],
+        option_orders:  _assignment.option_orders  || {},
+        answers:        answersPayload,
       }),
     });
     const data = await res.json();
     if (!res.ok) { alert(data.error || 'Submission failed.'); return; }
 
-    showResults(data.score, data.total, data.percent, data.correct_answers || {});
+    showResults(data.score, data.total, data.percent, data.correct_answers || {}, data.option_orders || {});
   } catch {
     alert('Network error. Please try again.');
   } finally {
@@ -406,7 +408,7 @@ async function submitQuiz() {
 }
 
 // ── Screen 4: results ──────────────────────────────────────────────────────────
-function showResults(score, total, percent, correctAnswers) {
+function showResults(score, total, percent, correctAnswers, returnedOptionOrders) {
   document.getElementById('res-score').textContent = score;
   document.getElementById('res-total').textContent = `/ ${total}`;
   document.getElementById('res-pct').textContent   = `${percent}%`;
@@ -417,15 +419,30 @@ function showResults(score, total, percent, correctAnswers) {
   else                    msg = 'Keep going — you\'ll improve with practice.';
   document.getElementById('res-msg').textContent = msg;
 
-  const reviewHtml = _assignment.questions.map((q, i) => {
-    const chosen     = _answers[q.id];
-    const correct    = correctAnswers[q.id];
-    const isCorrect  = chosen !== undefined && chosen === correct;
-    const isWrong    = chosen !== undefined && chosen !== correct;
-    const unanswered = chosen === undefined;
+  // option_orders maps display index → original index
+  // To show labels we need to find which display slot holds each original index
+  const optOrders = returnedOptionOrders || _assignment.option_orders || {};
 
-    const chosenLabel  = chosen  !== undefined ? `${LETTERS[chosen]}) ${escHtml(q.options[chosen])}`   : '—';
-    const correctLabel = correct !== undefined ? `${LETTERS[correct]}) ${escHtml(q.options[correct])}` : '';
+  const reviewHtml = _assignment.questions.map((q, i) => {
+    const displayChosen = _answers[q.id];          // index in displayed (possibly shuffled) options
+    const originalCorrect = correctAnswers[q.id];  // index in original (unshuffled) options
+
+    // Map original correct index → display index for label lookup
+    const order = optOrders[q.id] || q.options.map((_, j) => j);
+    const displayCorrect = order.indexOf(originalCorrect);
+
+    // Map display chosen → original for correctness check
+    const originalChosen = displayChosen !== undefined
+      ? (order[displayChosen] !== undefined ? order[displayChosen] : displayChosen)
+      : undefined;
+
+    const isCorrect  = originalChosen !== undefined && originalChosen === originalCorrect;
+    const isWrong    = originalChosen !== undefined && originalChosen !== originalCorrect;
+    const unanswered = displayChosen === undefined;
+
+    // Labels use the displayed options array (q.options already in display order from server)
+    const chosenLabel  = displayChosen  !== undefined ? `${LETTERS[displayChosen]}) ${escHtml(q.options[displayChosen])}`   : '—';
+    const correctLabel = displayCorrect >= 0          ? `${LETTERS[displayCorrect]}) ${escHtml(q.options[displayCorrect])}` : '';
 
     return `
       <div class="review-item ${isCorrect ? 'correct' : isWrong ? 'wrong' : ''}">

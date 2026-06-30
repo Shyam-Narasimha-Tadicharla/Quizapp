@@ -1,9 +1,9 @@
 """
-SQLAlchemy 2.0 ORM models — Phase 2/3 completion schema.
+SQLAlchemy 2.0 ORM models — Phase 4 schema.
 
-Tables built now:   schools, quizzes, questions, quiz_questions, users,
-                    subjects, subject_topics, user_subjects,
-                    assignments, results, answers
+Tables: schools, quizzes, questions, quiz_questions, users,
+        subjects, subject_topics, user_subjects,
+        assignments, results, answers, result_topic_scores
 """
 
 import uuid
@@ -19,7 +19,7 @@ from sqlalchemy import (
     ForeignKey,
     UniqueConstraint,
 )
-from sqlalchemy.dialects.postgresql import UUID, ARRAY
+from sqlalchemy.dialects.postgresql import UUID, ARRAY, JSONB
 from sqlalchemy.orm import DeclarativeBase, relationship
 
 
@@ -172,14 +172,19 @@ class Assignment(Base):
     """A teacher assigns a quiz to a class via a class_name code."""
     __tablename__ = "assignments"
 
-    id         = Column(UUID(as_uuid=False), primary_key=True, default=_uuid)
-    school_id  = Column(UUID(as_uuid=False), ForeignKey("schools.id"),              nullable=False)
-    quiz_id    = Column(UUID(as_uuid=False), ForeignKey("quizzes.id",  ondelete="CASCADE"), nullable=False)
-    created_by = Column(UUID(as_uuid=False), ForeignKey("users.id"),                nullable=False)
-    class_name = Column(String(100), nullable=False)
-    opens_at   = Column(DateTime(timezone=True), nullable=True)
-    closes_at  = Column(DateTime(timezone=True), nullable=True)
-    created_at = Column(DateTime(timezone=True), nullable=False, default=_now)
+    id                   = Column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    school_id            = Column(UUID(as_uuid=False), ForeignKey("schools.id"),              nullable=False)
+    quiz_id              = Column(UUID(as_uuid=False), ForeignKey("quizzes.id",  ondelete="CASCADE"), nullable=True)
+    created_by           = Column(UUID(as_uuid=False), ForeignKey("users.id"),                nullable=False)
+    class_name           = Column(String(100), nullable=False)
+    opens_at             = Column(DateTime(timezone=True), nullable=True)
+    closes_at            = Column(DateTime(timezone=True), nullable=True)
+    created_at           = Column(DateTime(timezone=True), nullable=False, default=_now)
+    # Phase 4 randomization
+    mode                 = Column(String(20),  nullable=False, default="manual")   # 'manual'|'randomized'|'total_random'
+    randomize_questions  = Column(Boolean,     nullable=False, default=False)
+    randomize_options    = Column(Boolean,     nullable=False, default=False)
+    topic_rules          = Column(JSONB,       nullable=True)  # [{topic, count}] for modes 2 & 3
 
     quiz    = relationship("Quiz",   back_populates="assignments")
     results = relationship("Result", back_populates="assignment", cascade="all, delete-orphan")
@@ -189,17 +194,21 @@ class Result(Base):
     """One student's attempt at an assigned quiz."""
     __tablename__ = "results"
 
-    id            = Column(UUID(as_uuid=False), primary_key=True, default=_uuid)
-    assignment_id = Column(UUID(as_uuid=False), ForeignKey("assignments.id", ondelete="CASCADE"), nullable=False)
-    student_name  = Column(String(255), nullable=False)
-    roll_number   = Column(String(50),  nullable=False)
-    class_name    = Column(String(100), nullable=False)
-    score         = Column(Integer, nullable=False)
-    total         = Column(Integer, nullable=False)
-    submitted_at  = Column(DateTime(timezone=True), nullable=False, default=_now)
+    id             = Column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    assignment_id  = Column(UUID(as_uuid=False), ForeignKey("assignments.id", ondelete="CASCADE"), nullable=False)
+    student_name   = Column(String(255), nullable=False)
+    roll_number    = Column(String(50),  nullable=False)
+    class_name     = Column(String(100), nullable=False)
+    score          = Column(Integer, nullable=False)
+    total          = Column(Integer, nullable=False)
+    submitted_at   = Column(DateTime(timezone=True), nullable=False, default=_now)
+    # Phase 4 shuffle maps — stored so scoring and review are always correct
+    question_order = Column(JSONB, nullable=True)  # [question_id, ...]  in seen order
+    option_orders  = Column(JSONB, nullable=True)  # {question_id: [original_idx, ...]}
 
-    assignment = relationship("Assignment", back_populates="results")
-    answers    = relationship("Answer",     back_populates="result", cascade="all, delete-orphan")
+    assignment   = relationship("Assignment",       back_populates="results")
+    answers      = relationship("Answer",           back_populates="result", cascade="all, delete-orphan")
+    topic_scores = relationship("ResultTopicScore", back_populates="result", cascade="all, delete-orphan")
 
 
 class Answer(Base):
@@ -214,3 +223,16 @@ class Answer(Base):
 
     result   = relationship("Result",   back_populates="answers")
     question = relationship("Question", back_populates="answers")
+
+
+class ResultTopicScore(Base):
+    """Per-topic breakdown for a single student attempt — used for analytics."""
+    __tablename__ = "result_topic_scores"
+
+    id        = Column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    result_id = Column(UUID(as_uuid=False), ForeignKey("results.id", ondelete="CASCADE"), nullable=False)
+    topic     = Column(String(255), nullable=False)
+    correct   = Column(Integer,     nullable=False)
+    total     = Column(Integer,     nullable=False)
+
+    result = relationship("Result", back_populates="topic_scores")
