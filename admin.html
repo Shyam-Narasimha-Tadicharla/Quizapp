@@ -943,8 +943,7 @@
         </div>
         <button class="logout-btn" onclick="logout()" title="Sign out">⏻</button>
       </div>
-      <div class="api-url-label">Backend URL</div>
-      <input class="api-url-input" id="api-url" value="" placeholder="(same origin)" oninput="saveApiUrl()" />
+      <input id="api-url" type="hidden" value="" />
     </div>
   </aside>
 
@@ -1623,7 +1622,6 @@ async function loadLibrary() {
           <tr>
             <th>Title</th>
             <th>Questions</th>
-            <th>Source file</th>
             <th>Created</th>
             <th style="text-align:right">Actions</th>
           </tr>
@@ -1633,12 +1631,11 @@ async function loadLibrary() {
             <tr>
               <td class="td-title">${escHtml(q.title)}</td>
               <td><span class="td-badge">${q.question_count}</span></td>
-              <td class="td-meta">${escHtml(q.source_filename || '—')}</td>
               <td class="td-meta">${fmtDate(q.created_at)}</td>
               <td>
                 <div class="td-actions">
-                  <button class="btn btn-sm btn-ghost embed-btn" data-id="${escHtml(q.id)}">
-                    &lt;/&gt; Embed
+                  <button class="btn btn-sm btn-ghost preview-btn" data-id="${escHtml(q.id)}">
+                    ▶ Preview
                   </button>
                   ${isAdmin() ? `<button class="btn btn-sm btn-ghost delete-quiz-btn" data-id="${escHtml(q.id)}" data-title="${escHtml(q.title)}" style="color:var(--red)">
                     ✕ Delete
@@ -1650,12 +1647,10 @@ async function loadLibrary() {
         </tbody>
       </table>`;
 
-    // Attach embed button listeners after DOM is built
-    body.querySelectorAll('.embed-btn').forEach(btn => {
+    // Attach preview button listeners after DOM is built
+    body.querySelectorAll('.preview-btn').forEach(btn => {
       btn.addEventListener('click', () => {
-        const id    = btn.dataset.id;
-        const title = window._quizMeta[id] || 'Quiz';
-        openDrawer(id, title);
+        window.open(apiBase() + '/preview/' + btn.dataset.id, '_blank');
       });
     });
 
