@@ -2089,7 +2089,7 @@ def get_take_quiz(class_name: str):
             )
             .where(
                 (Assignment.closes_at.is_(None)) |
-                (func.date(Assignment.closes_at) >= func.date(now))
+                (Assignment.closes_at >= now)
             )
             .order_by(Assignment.created_at.desc())
         )
@@ -2201,7 +2201,7 @@ def start_quiz(class_name: str):
         if a is None:
             return jsonify({"error": "Assignment not found."}), 404
 
-        if a.closes_at and a.closes_at.date() < now.date():
+        if a.closes_at and a.closes_at <= now:
             return jsonify({"error": "This assignment has closed."}), 403
 
         # Block re-attempts: if a completed result exists for this roll number, reject
@@ -2282,7 +2282,7 @@ def submit_quiz(class_name: str):
         if a is None:
             return jsonify({"error": "Assignment not found."}), 404
 
-        if a.closes_at and a.closes_at.date() < now.date():
+        if a.closes_at and a.closes_at <= now:
             return jsonify({"error": "This assignment has closed."}), 403
 
         # Timed delivery: check if deadline has passed
