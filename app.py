@@ -1832,6 +1832,7 @@ def get_take_quiz(class_name: str):
                 (func.date(Assignment.closes_at) >= func.date(now))
             )
             .order_by(Assignment.created_at.desc())
+            .limit(1)
         ).scalar_one_or_none()
 
         if a is None:
