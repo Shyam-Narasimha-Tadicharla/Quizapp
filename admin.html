@@ -2113,7 +2113,10 @@ async function loadAssignments() {
         ? `<span style="font-size:10px;padding:1px 7px;border-radius:99px;background:rgba(99,102,241,.15);color:#a5b4fc;font-weight:600;margin-left:4px">⏱ ${a.duration_minutes}m</span>`
         : '';
 
-    body.innerHTML = _assignments.map(a => `
+    const nowMs = Date.now();
+    body.innerHTML = _assignments.map(a => {
+      const isClosed = a.closes_at ? new Date(a.closes_at).getTime() <= nowMs : false;
+      return `
       <div class="assign-row">
         <div>
           <div style="font-weight:500;color:var(--ink)">
@@ -2121,6 +2124,7 @@ async function loadAssignments() {
             ${modeBadge(a.mode)}
             ${shuffleBadge(a)}
             ${timerBadge(a)}
+            ${isClosed ? '<span style="font-size:10px;padding:1px 7px;border-radius:99px;background:rgba(248,113,113,.15);color:var(--red);font-weight:600;margin-left:4px">closed</span>' : ''}
           </div>
           <div class="assign-meta">
             <span class="assign-class">${escHtml(a.class_name)}</span>
@@ -2136,9 +2140,13 @@ async function loadAssignments() {
         <button class="btn btn-sm btn-ghost" onclick="editAssignment('${a.id}','${escHtml(a.class_name)}','${a.quiz_id || ''}','${escHtml(a.quiz_title || '')}',${a.duration_minutes || 'null'},'${a.opens_at || ''}','${a.closes_at || ''}')" title="Edit">
           ✏ Edit
         </button>
+        <button class="btn btn-sm btn-ghost" onclick="toggleAssignmentClosed('${a.id}', ${isClosed})"
+          style="${isClosed ? 'color:var(--green)' : 'color:var(--amber)'}" title="${isClosed ? 'Reopen assignment' : 'Close assignment'}">
+          ${isClosed ? '▶ Reopen' : '⏹ Close'}
+        </button>
         ${isAdmin() ? `<button class="btn btn-sm btn-ghost" onclick="confirmDeleteAssignment('${a.id}','${escHtml(a.quiz_title || a.class_name)}')" style="color:var(--red)">✕</button>` : ''}
       </div>
-    `).join('');
+    `;}).join('');
   } catch (err) {
     body.innerHTML = `<div class="card-body" style="color:var(--red);font-size:13px">${err.message}</div>`;
   }
@@ -2482,6 +2490,43 @@ function editAssignment(id, currentName, quizId, currentQuizTitle, currentDurati
     const el = document.getElementById('edit-quiz-title') || document.getElementById('edit-class');
     if (el) { el.focus(); el.select(); }
   }, 50);
+}
+
+function confirmResetResult(assignmentId, resultId, studentName) {
+  showModal(
+    'Reset student result',
+    `<strong style="color:var(--ink)">${escHtml(studentName)}</strong>'s submission will be reset. Their score will be hidden from the results panel and they will be allowed to retake the quiz. Their original answers are kept in the database and can be restored manually if needed.`,
+    'Reset', 'var(--amber)',
+    async () => {
+      closeModal();
+      try {
+        const res  = await fetch(apiBase() + `/api/assignments/${assignmentId}/results/${resultId}`, {
+          method:  'PATCH',
+          headers: { 'Content-Type': 'application/json', ...authHeaders() },
+          body:    JSON.stringify({ is_complete: false }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error);
+        toast(`${studentName}'s result has been reset.`, 'ok');
+        openResultDetail(assignmentId);  // reload the student table
+      } catch (err) { toast(err.message, 'err'); }
+    }
+  );
+}
+
+async function toggleAssignmentClosed(assignmentId, currentlyClosed) {
+  const action = currentlyClosed ? 'reopen' : 'close';
+  try {
+    const res  = await fetch(apiBase() + `/api/assignments/${assignmentId}`, {
+      method:  'PATCH',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body:    JSON.stringify({ is_closed: !currentlyClosed }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    toast(`Assignment ${action}d.`, 'ok');
+    loadAssignments();
+  } catch (err) { toast(err.message, 'err'); }
 }
 
 function copyTakeLink(className) {
@@ -2879,12 +2924,12 @@ async function openResultDetail(assignmentId) {
     // Student table
     const tableHtml = `
       <div style="padding:0">
-        <div style="display:grid;grid-template-columns:2fr 1fr 1fr 80px 70px 28px;gap:10px;
+        <div style="display:grid;grid-template-columns:2fr 1fr 1fr 80px 70px 90px 28px;gap:10px;
           padding:8px 16px;border-bottom:1px solid var(--border);
           font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-dim)">
-          <div>Student</div><div>Roll</div><div>Score</div><div>%</div><div>Time</div><div></div>
+          <div>Student</div><div>Roll</div><div>Score</div><div>%</div><div>Time</div><div></div><div></div>
         </div>
-        ${results.map(r => buildStudentRow(r)).join('')}
+        ${results.map(r => buildStudentRow(r, assignmentId)).join('')}
       </div>`;
     document.getElementById('rd-student-table').innerHTML = tableHtml;
 
@@ -2904,7 +2949,7 @@ function fmtTime(secs) {
   return m > 0 ? `${m}m ${String(s).padStart(2,'0')}s` : `${s}s`;
 }
 
-function buildStudentRow(r) {
+function buildStudentRow(r, assignmentId) {
   const pctClass = r.percent >= 80 ? 'pct-high' : r.percent >= 50 ? 'pct-mid' : 'pct-low';
   const rowId    = 'sr-' + r.id;
 
@@ -2970,12 +3015,18 @@ function buildStudentRow(r) {
 
   return `
     <div class="sr-row">
-      <div class="sr-head" onclick="toggleStudentRow('${rowId}')" style="grid-template-columns:2fr 1fr 1fr 80px 70px 28px">
+      <div class="sr-head" onclick="toggleStudentRow('${rowId}')" style="grid-template-columns:2fr 1fr 1fr 80px 70px 90px 28px">
         <div style="font-weight:500;color:var(--ink)">${escHtml(r.student_name)}</div>
         <div style="color:var(--ink-dim)">${escHtml(r.roll_number)}</div>
         <div>${r.score} / ${r.total}</div>
         <div><span class="pct-badge ${pctClass}">${r.percent}%</span></div>
         <div style="color:var(--ink-dim);font-size:12px">${fmtTime(r.time_taken_seconds)}</div>
+        <div onclick="event.stopPropagation()">
+          <button class="btn btn-sm btn-ghost" style="font-size:11px;padding:3px 9px;color:var(--amber)"
+            onclick="confirmResetResult('${assignmentId}','${r.id}','${escHtml(r.student_name)}')">
+            ↺ Reset
+          </button>
+        </div>
         <div class="sr-expand-icon" id="${rowId}-icon">▶</div>
       </div>
       <div class="sr-detail" id="${rowId}">

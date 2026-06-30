@@ -1662,8 +1662,29 @@ def create_assignment():
 @app.route("/api/assignments/<assignment_id>", methods=["PATCH"])
 @require_auth
 def update_assignment(assignment_id: str):
-    """Update assignment fields: class_name, duration_minutes, opens_at, closes_at."""
+    """
+    Update assignment fields: class_name, duration_minutes, opens_at, closes_at.
+    Also accepts is_closed=true to immediately close (sets closes_at=now)
+    or is_closed=false to reopen (clears closes_at).
+    """
     body       = request.get_json(silent=True) or {}
+
+    # Quick close/reopen toggle — doesn't require class_name
+    if "is_closed" in body:
+        now = datetime.now(timezone.utc)
+        with Session(_engine) as session:
+            a = session.execute(
+                select(Assignment)
+                .where(Assignment.id == assignment_id)
+                .where(Assignment.school_id == g.school_id)
+            ).scalar_one_or_none()
+            if a is None:
+                return jsonify({"error": "Assignment not found."}), 404
+            a.closes_at = now if body["is_closed"] else None
+            session.commit()
+            is_closed = body["is_closed"]
+        return jsonify({"id": assignment_id, "is_closed": is_closed})
+
     class_name = (body.get("class_name") or "").strip()
     if not class_name:
         return jsonify({"error": "class_name is required."}), 400
@@ -1703,7 +1724,7 @@ def update_assignment(assignment_id: str):
         if a is None:
             return jsonify({"error": "Assignment not found."}), 404
 
-        a.class_name      = class_name
+        a.class_name       = class_name
         a.duration_minutes = dur
         if opens_at or clear_opens:
             a.opens_at = opens_at
@@ -1712,6 +1733,38 @@ def update_assignment(assignment_id: str):
         session.commit()
 
     return jsonify({"id": assignment_id, "class_name": class_name})
+
+
+@app.route("/api/assignments/<assignment_id>/results/<result_id>", methods=["PATCH"])
+@require_auth
+def reset_result(assignment_id: str, result_id: str):
+    """
+    Reset a student's result so they can retake the quiz.
+    Sets is_complete=False — the row stays in DB but is hidden from stats
+    and the student can start fresh (the /start endpoint cleans up incomplete rows).
+    """
+    with Session(_engine) as session:
+        a = session.execute(
+            select(Assignment)
+            .where(Assignment.id == assignment_id)
+            .where(Assignment.school_id == g.school_id)
+        ).scalar_one_or_none()
+        if a is None:
+            return jsonify({"error": "Assignment not found."}), 404
+
+        result = session.execute(
+            select(Result)
+            .where(Result.id == result_id)
+            .where(Result.assignment_id == assignment_id)
+        ).scalar_one_or_none()
+        if result is None:
+            return jsonify({"error": "Result not found."}), 404
+
+        result.is_complete = False
+        session.commit()
+
+    log.info("Result reset: result=%s assignment=%s by user=%s", result_id, assignment_id, g.user_id)
+    return jsonify({"id": result_id, "is_complete": False})
 
 
 @app.route("/api/assignments/<assignment_id>", methods=["DELETE"])
