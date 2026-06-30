@@ -438,12 +438,13 @@
     .modal-box {
       background: var(--surface); border: 1px solid var(--border);
       border-radius: 14px; padding: 1.75rem 1.5rem;
-      width: 100%; max-width: 440px;
+      width: 100%; max-width: 480px;
+      max-height: 90vh;
       display: flex; flex-direction: column; gap: 1rem;
     }
-    .modal-title { font-size: 15px; font-weight: 600; }
-    .modal-body  { font-size: 13px; color: var(--ink-dim); line-height: 1.6; }
-    .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: .25rem; }
+    .modal-title { font-size: 15px; font-weight: 600; flex-shrink: 0; }
+    .modal-body  { font-size: 13px; color: var(--ink-dim); line-height: 1.6; overflow-y: auto; flex: 1; min-height: 0; }
+    .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: .25rem; flex-shrink: 0; }
     .quiz-check-item {
       display: flex; align-items: center; gap: 10px;
       padding: 8px 10px; border-radius: 7px;
