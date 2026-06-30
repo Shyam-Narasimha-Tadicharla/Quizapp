@@ -1922,7 +1922,7 @@ async function loadAssignments() {
         <button class="btn btn-sm btn-ghost" onclick="copyTakeLink('${escHtml(a.class_name)}')" title="Copy student link">
           🔗 Link
         </button>
-        <button class="btn btn-sm btn-ghost" onclick="renameAssignment('${a.id}','${escHtml(a.class_name)}')" title="Rename class code">
+        <button class="btn btn-sm btn-ghost" onclick="renameAssignment('${a.id}','${escHtml(a.class_name)}','${a.quiz_id || ''}','${escHtml(a.quiz_title || '')}')" title="Rename">
           ✏ Rename
         </button>
         ${isAdmin() ? `<button class="btn btn-sm btn-ghost" onclick="confirmDeleteAssignment('${a.id}','${escHtml(a.quiz_title || a.class_name)}')" style="color:var(--red)">✕</button>` : ''}
@@ -2176,10 +2176,15 @@ function confirmDeleteAssignment(id, title) {
   );
 }
 
-function renameAssignment(id, currentName) {
+function renameAssignment(id, currentName, quizId, currentQuizTitle) {
+  const hasQuiz = !!quizId;
   document.getElementById('modal-title').textContent = 'Rename assignment';
   document.getElementById('modal-body').innerHTML =
-    '<div style="font-size:12px;color:var(--ink-dim);margin-bottom:6px">New class code (students will use this to join)</div>' +
+    (hasQuiz
+      ? '<div style="font-size:12px;color:var(--ink-dim);margin-bottom:4px">Quiz title (shown to students)</div>' +
+        `<input class="inline-input" id="rename-quiz-title" value="${escHtml(currentQuizTitle || '')}" style="width:100%;margin-bottom:12px" />` +
+        '<div style="font-size:12px;color:var(--ink-dim);margin-bottom:4px">Class code (students enter this to join)</div>'
+      : '<div style="font-size:12px;color:var(--ink-dim);margin-bottom:4px">Class code (students enter this to join)</div>') +
     `<input class="inline-input" id="rename-class" value="${escHtml(currentName)}" style="width:100%" />`;
   document.getElementById('modal-quiz-list').innerHTML = '';
   document.getElementById('modal-confirm-btn').textContent = 'Save';
@@ -2189,20 +2194,35 @@ function renameAssignment(id, currentName) {
     if (!class_name) { toast('Class code cannot be empty.', 'err'); return; }
     closeModal();
     try {
-      const res  = await fetch(apiBase() + `/api/assignments/${id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({ class_name }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
-      toast(`Renamed to "${class_name}".`, 'ok');
+      const calls = [
+        fetch(apiBase() + `/api/assignments/${id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', ...authHeaders() },
+          body: JSON.stringify({ class_name }),
+        }),
+      ];
+      if (hasQuiz) {
+        const newTitle = (document.getElementById('rename-quiz-title').value || '').trim();
+        if (newTitle) {
+          calls.push(fetch(apiBase() + `/api/quiz/${quizId}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json', ...authHeaders() },
+            body: JSON.stringify({ title: newTitle }),
+          }));
+        }
+      }
+      const results = await Promise.all(calls);
+      for (const res of results) {
+        if (!res.ok) { const d = await res.json(); throw new Error(d.error); }
+      }
+      toast('Assignment renamed.', 'ok');
       loadAssignments();
+      loadLibrary();
     } catch (err) { toast(err.message, 'err'); }
   };
   document.getElementById('generic-modal').classList.add('open');
   setTimeout(() => {
-    const el = document.getElementById('rename-class');
+    const el = document.getElementById('rename-quiz-title') || document.getElementById('rename-class');
     if (el) { el.focus(); el.select(); }
   }, 50);
 }

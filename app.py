@@ -1196,6 +1196,29 @@ def delete_question(question_id: str):
     return jsonify({"message": "Question deleted."})
 
 
+@app.route("/api/quiz/<quiz_id>", methods=["PATCH"])
+@require_auth
+def update_quiz(quiz_id: str):
+    """Rename a quiz title. Teacher or admin."""
+    body  = request.get_json(silent=True) or {}
+    title = (body.get("title") or "").strip()
+    if not title:
+        return jsonify({"error": "title is required."}), 400
+
+    with Session(_engine) as session:
+        quiz = session.execute(
+            select(Quiz)
+            .where(Quiz.id == quiz_id)
+            .where(Quiz.school_id == g.school_id)
+        ).scalar_one_or_none()
+        if quiz is None:
+            return jsonify({"error": "Quiz not found."}), 404
+        quiz.title = title
+        session.commit()
+
+    return jsonify({"id": quiz_id, "title": title})
+
+
 @app.route("/api/quiz/<quiz_id>", methods=["DELETE"])
 @require_auth
 def delete_quiz(quiz_id: str):
