@@ -1117,6 +1117,7 @@
             <div style="font-size:12px;color:var(--ink-dim)" id="rd-sub"></div>
           </div>
           <button class="btn btn-sm" id="rd-csv-btn" style="display:none" onclick="downloadResultsCsv()">⬇ Download CSV</button>
+          <button class="btn btn-sm" id="rd-pdf-btn" style="display:none" onclick="downloadResultsPdf()">⬇ Download PDF</button>
         </div>
         <div class="tab-bar">
           <button class="tab-btn active" id="tab-students" onclick="switchTab('students')">Students</button>
@@ -3004,10 +3005,12 @@ async function openResultDetail(assignmentId) {
       document.getElementById('rd-student-table').innerHTML = '';
       document.getElementById('rd-summary').innerHTML = '';
       document.getElementById('rd-csv-btn').style.display = 'none';
+      document.getElementById('rd-pdf-btn').style.display = 'none';
       return;
     }
 
     document.getElementById('rd-csv-btn').style.display = '';
+    document.getElementById('rd-pdf-btn').style.display = '';
 
     const avg = Math.round(results.reduce((s, r) => s + r.percent, 0) / results.length);
     const best = Math.max(...results.map(r => r.percent));
@@ -3188,6 +3191,7 @@ function closeResultDetail() {
   document.getElementById('results-list-view').style.display   = '';
   document.getElementById('results-detail-view').style.display = 'none';
   document.getElementById('rd-csv-btn').style.display = 'none';
+  document.getElementById('rd-pdf-btn').style.display = 'none';
 }
 
 async function downloadResultsCsv() {
@@ -3200,6 +3204,20 @@ async function downloadResultsCsv() {
   const a    = document.createElement('a');
   a.href     = url;
   a.download = res.headers.get('Content-Disposition')?.match(/filename="(.+)"/)?.[1] || 'results.csv';
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+async function downloadResultsPdf() {
+  const assignmentId = _currentAnalyticsId;
+  if (!assignmentId) return;
+  const res = await fetch(apiBase() + `/api/assignments/${assignmentId}/results/pdf`, { headers: authHeaders() });
+  if (!res.ok) { alert('Failed to download PDF.'); return; }
+  const blob = await res.blob();
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href     = url;
+  a.download = res.headers.get('Content-Disposition')?.match(/filename="(.+)"/)?.[1] || 'results.pdf';
   a.click();
   URL.revokeObjectURL(url);
 }

@@ -1985,6 +1985,227 @@ def get_assignment_results_csv(assignment_id: str):
     )
 
 
+@app.route("/api/assignments/<assignment_id>/results/pdf", methods=["GET"])
+@require_auth
+def get_assignment_results_pdf(assignment_id: str):
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors
+    from reportlab.lib.units import cm
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, HRFlowable
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT
+
+    with Session(_engine) as session:
+        a = session.execute(
+            select(Assignment)
+            .where(Assignment.id == assignment_id)
+            .where(Assignment.school_id == g.school_id)
+        ).scalar_one_or_none()
+        if a is None:
+            return jsonify({"error": "Assignment not found."}), 404
+
+        quiz = session.get(Quiz, a.quiz_id)
+        quiz_title = quiz.title if quiz else "Quiz"
+
+        results = session.execute(
+            select(Result)
+            .where(Result.assignment_id == assignment_id)
+            .where(Result.is_complete == True)  # noqa: E712
+            .order_by(Result.submitted_at)
+        ).scalars().all()
+
+        result_ids = [r.id for r in results]
+        topic_rows = session.execute(
+            select(ResultTopicScore)
+            .where(ResultTopicScore.result_id.in_(result_ids))
+        ).scalars().all()
+
+        topic_by_result: dict = {}
+        all_topics: list = []
+        for ts in topic_rows:
+            topic_by_result.setdefault(ts.result_id, {})[ts.topic] = ts
+            if ts.topic not in all_topics:
+                all_topics.append(ts.topic)
+        all_topics = sorted(all_topics)
+
+    # ── Build PDF ────────────────────────────────────────────────────────────
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=A4,
+        leftMargin=1.8*cm, rightMargin=1.8*cm,
+        topMargin=1.8*cm, bottomMargin=1.8*cm,
+    )
+
+    styles  = getSampleStyleSheet()
+    PRIMARY = colors.HexColor("#6c63ff")
+    LIGHT   = colors.HexColor("#f0efff")
+    DIM     = colors.HexColor("#888888")
+    RED     = colors.HexColor("#e53e3e")
+    GREEN   = colors.HexColor("#38a169")
+
+    title_style = ParagraphStyle("title", fontSize=16, fontName="Helvetica-Bold", textColor=PRIMARY, spaceAfter=6)
+    sub_style   = ParagraphStyle("sub",   fontSize=10, fontName="Helvetica",      textColor=DIM,     spaceAfter=6)
+    label_style = ParagraphStyle("label", fontSize=9,  fontName="Helvetica-Bold", textColor=DIM)
+    body_style  = ParagraphStyle("body",  fontSize=9,  fontName="Helvetica")
+
+    date_str = a.created_at.strftime("%d %b %Y") if a.created_at else "—"
+    n = len(results)
+
+    story = []
+    story.append(Paragraph(quiz_title, title_style))
+    story.append(Paragraph(f"Class: {a.class_name}  ·  Date: {date_str}  ·  Submissions: {n}", sub_style))
+    story.append(HRFlowable(width="100%", thickness=1, color=LIGHT, spaceAfter=10))
+
+    # ── Summary stats ────────────────────────────────────────────────────────
+    if n > 0:
+        percents = [round(r.score / r.total * 100) if r.total else 0 for r in results]
+        avg  = round(sum(percents) / n)
+        best = max(percents)
+        low  = min(percents)
+
+        stat_data = [
+            [Paragraph(f"<b>{n}</b>", ParagraphStyle("sv", fontSize=18, fontName="Helvetica-Bold", alignment=TA_CENTER)),
+             Paragraph(f"<b>{avg}%</b>", ParagraphStyle("sv", fontSize=18, fontName="Helvetica-Bold", alignment=TA_CENTER, textColor=PRIMARY)),
+             Paragraph(f"<b>{best}%</b>", ParagraphStyle("sv", fontSize=18, fontName="Helvetica-Bold", alignment=TA_CENTER, textColor=GREEN)),
+             Paragraph(f"<b>{low}%</b>", ParagraphStyle("sv", fontSize=18, fontName="Helvetica-Bold", alignment=TA_CENTER, textColor=RED))],
+            [Paragraph("Submissions", ParagraphStyle("sl", fontSize=8, fontName="Helvetica", textColor=DIM, alignment=TA_CENTER)),
+             Paragraph("Class Average", ParagraphStyle("sl", fontSize=8, fontName="Helvetica", textColor=DIM, alignment=TA_CENTER)),
+             Paragraph("Highest", ParagraphStyle("sl", fontSize=8, fontName="Helvetica", textColor=DIM, alignment=TA_CENTER)),
+             Paragraph("Lowest", ParagraphStyle("sl", fontSize=8, fontName="Helvetica", textColor=DIM, alignment=TA_CENTER))],
+        ]
+        stat_table = Table(stat_data, colWidths=["25%", "25%", "25%", "25%"])
+        stat_table.setStyle(TableStyle([
+            ("BACKGROUND", (0,0), (-1,-1), LIGHT),
+            ("ROUNDEDCORNERS", [6]),
+            ("TOPPADDING",    (0,0), (-1,-1), 10),
+            ("BOTTOMPADDING", (0,0), (-1,-1), 8),
+            ("LINEAFTER", (0,0), (2,1), 0.5, colors.white),
+        ]))
+        story.append(stat_table)
+        story.append(Spacer(1, 14))
+
+        # ── Student results table ────────────────────────────────────────────
+        story.append(Paragraph("Student Results", ParagraphStyle("sh", fontSize=11, fontName="Helvetica-Bold", spaceAfter=6)))
+
+        hdr = ["Roll No", "Student Name", "Score %", "Correct / Total"] + all_topics
+        col_count = len(hdr)
+        fixed_w   = [1.8*cm, 5.5*cm, 1.8*cm, 2.5*cm]
+        topic_w   = [(doc.width - sum(fixed_w)) / len(all_topics)] if all_topics else []
+        col_widths = fixed_w + topic_w * len(all_topics)
+
+        # clip to page width
+        total_w = sum(col_widths)
+        if total_w > doc.width:
+            scale = doc.width / total_w
+            col_widths = [w * scale for w in col_widths]
+
+        cell_style = ParagraphStyle("cell", fontSize=8, fontName="Helvetica", leading=10)
+        hdr_style  = ParagraphStyle("hcell", fontSize=8, fontName="Helvetica-Bold", textColor=colors.white, leading=10)
+
+        table_data = [[Paragraph(h, hdr_style) for h in hdr]]
+
+        total_score = 0
+        total_possible = 0
+        topic_totals: dict = {t: {"correct": 0, "total": 0} for t in all_topics}
+
+        for r in results:
+            pct = round(r.score / r.total * 100) if r.total else 0
+            ts_map = topic_by_result.get(r.id, {})
+            topic_cells = []
+            for t in all_topics:
+                ts = ts_map.get(t)
+                if ts:
+                    topic_cells.append(Paragraph(f"{round(ts.correct/ts.total*100) if ts.total else 0}%", cell_style))
+                    topic_totals[t]["correct"] += ts.correct
+                    topic_totals[t]["total"]   += ts.total
+                else:
+                    topic_cells.append(Paragraph("—", cell_style))
+            table_data.append([
+                Paragraph(str(r.roll_number), cell_style),
+                Paragraph(r.student_name, cell_style),
+                Paragraph(f"{pct}%", cell_style),
+                Paragraph(f"{r.score} / {r.total}", cell_style),
+            ] + topic_cells)
+            total_score    += r.score
+            total_possible += r.total
+
+        # Average row
+        avg_pct  = round(total_score / total_possible * 100) if total_possible else 0
+        avg_topic_cells = []
+        for t in all_topics:
+            tt = topic_totals[t]
+            avg_topic_cells.append(Paragraph(f"{round(tt['correct']/tt['total']*100) if tt['total'] else '—'}%", cell_style))
+        avg_style = ParagraphStyle("avg", fontSize=8, fontName="Helvetica-Bold", leading=10)
+        table_data.append([
+            Paragraph("", avg_style),
+            Paragraph("Class Average", avg_style),
+            Paragraph(f"{avg_pct}%", avg_style),
+            Paragraph(f"{round(total_score/n,1)} / {round(total_possible/n,1)}", avg_style),
+        ] + avg_topic_cells)
+
+        t = Table(table_data, colWidths=col_widths, repeatRows=1)
+        last_row = len(table_data) - 1
+        t.setStyle(TableStyle([
+            ("BACKGROUND",    (0, 0), (-1, 0),         PRIMARY),
+            ("BACKGROUND",    (0, last_row), (-1, last_row), LIGHT),
+            ("TEXTCOLOR",     (0, 0), (-1, 0),         colors.white),
+            ("ROWBACKGROUNDS",(0, 1), (-1, last_row-1), [colors.white, colors.HexColor("#fafafa")]),
+            ("GRID",          (0, 0), (-1, -1),        0.4, colors.HexColor("#e2e8f0")),
+            ("TOPPADDING",    (0, 0), (-1, -1),        5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1),        5),
+            ("LEFTPADDING",   (0, 0), (-1, -1),        5),
+            ("RIGHTPADDING",  (0, 0), (-1, -1),        5),
+            ("VALIGN",        (0, 0), (-1, -1),        "MIDDLE"),
+        ]))
+        story.append(t)
+
+        # ── Topic performance ────────────────────────────────────────────────
+        if all_topics:
+            story.append(Spacer(1, 18))
+            story.append(Paragraph("Topic Performance (class)", ParagraphStyle("sh", fontSize=11, fontName="Helvetica-Bold", spaceAfter=6)))
+            topic_perf = []
+            for tp in all_topics:
+                tt = topic_totals[tp]
+                pct = round(tt["correct"] / tt["total"] * 100) if tt["total"] else 0
+                topic_perf.append((tp, pct))
+            topic_perf.sort(key=lambda x: x[1])  # weakest first
+
+            tp_data = [[Paragraph("Topic", hdr_style), Paragraph("Class %", hdr_style)]]
+            for tp, pct in topic_perf:
+                c = GREEN if pct >= 70 else (colors.HexColor("#d69e2e") if pct >= 50 else RED)
+                tp_data.append([
+                    Paragraph(tp, cell_style),
+                    Paragraph(f"{pct}%", ParagraphStyle("tpct", fontSize=8, fontName="Helvetica-Bold", textColor=c)),
+                ])
+            tp_table = Table(tp_data, colWidths=[doc.width * 0.75, doc.width * 0.25])
+            tp_table.setStyle(TableStyle([
+                ("BACKGROUND",    (0, 0), (-1, 0),  PRIMARY),
+                ("ROWBACKGROUNDS",(0, 1), (-1, -1), [colors.white, colors.HexColor("#fafafa")]),
+                ("GRID",          (0, 0), (-1, -1), 0.4, colors.HexColor("#e2e8f0")),
+                ("TOPPADDING",    (0, 0), (-1, -1), 5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                ("LEFTPADDING",   (0, 0), (-1, -1), 5),
+                ("RIGHTPADDING",  (0, 0), (-1, -1), 5),
+            ]))
+            story.append(tp_table)
+    else:
+        story.append(Paragraph("No submissions yet.", body_style))
+
+    doc.build(story)
+    pdf_bytes = buf.getvalue()
+
+    safe_title = re.sub(r"[^\w\s-]", "", quiz_title).strip().replace(" ", "_")
+    filename   = f"{safe_title}_{a.class_name}_results.pdf"
+    return (
+        pdf_bytes,
+        200,
+        {
+            "Content-Type": "application/pdf",
+            "Content-Disposition": f'attachment; filename="{filename}"',
+        },
+    )
+
+
 @app.route("/api/assignments/<assignment_id>/analytics", methods=["GET"])
 @require_auth
 def get_assignment_analytics(assignment_id: str):
