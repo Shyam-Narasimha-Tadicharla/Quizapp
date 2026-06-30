@@ -218,6 +218,16 @@
     </div>
   </div>
 
+  <!-- ── Screen 1.5: Pick assignment (when multiple exist for class) ── -->
+  <div class="screen" id="screen-picker">
+    <div class="card">
+      <button onclick="goBack('screen-class')" style="background:none;border:none;color:var(--ink-dim);font-size:13px;cursor:pointer;padding:0;margin-bottom:1rem;display:flex;align-items:center;gap:5px">← Back</button>
+      <div class="card-title">Choose a test</div>
+      <div class="card-sub" id="picker-sub">Multiple tests are available for your class. Select the one your teacher assigned you.</div>
+      <div id="picker-list" style="display:flex;flex-direction:column;gap:8px;margin-top:1rem"></div>
+    </div>
+  </div>
+
   <!-- ── Screen 2: Enter student details ── -->
   <div class="screen" id="screen-student">
     <div class="card">
@@ -279,6 +289,7 @@
 <script>
 // ── State ─────────────────────────────────────────────────────────────────────
 let _assignment    = null;   // full assignment object from /api/take
+let _classCode     = '';     // raw class code entered by student
 let _studentName   = '';
 let _rollNumber    = '';
 let _answers       = {};     // question_id → chosen display index
@@ -296,10 +307,12 @@ function showScreen(id) {
 }
 
 function goBack(targetScreen) {
-  // Only screen-class is a valid back target (from student details screen)
   document.getElementById('student-name').value = '';
   document.getElementById('student-roll').value = '';
   clearError('student-error');
+  if (targetScreen === 'screen-class') {
+    _assignment = null;
+  }
   showScreen(targetScreen);
 }
 function showError(elId, msg) {
@@ -350,28 +363,67 @@ async function lookupClass() {
     const data = await res.json();
     if (!res.ok) { showError('class-error', data.error || 'Class not found.'); return; }
 
-    _assignment = data;
+    _classCode = code;
 
-    // Show timer notice if duration set
-    const noticeEl = document.getElementById('student-timer-notice');
-    if (data.duration_minutes) {
-      document.getElementById('student-timer-mins').textContent = data.duration_minutes;
-      noticeEl.style.display = '';
-    } else {
-      noticeEl.style.display = 'none';
+    if (data.multiple) {
+      // Multiple assignments — show picker
+      document.getElementById('picker-sub').textContent =
+        `Multiple tests are available for class ${data.class_name}. Select the one your teacher assigned you.`;
+      const list = document.getElementById('picker-list');
+      list.innerHTML = data.assignments.map(a => `
+        <button onclick="pickAssignment('${escHtml(code)}', '${a.id}')"
+          onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'"
+          style="width:100%;text-align:left;padding:13px 15px;border:1.5px solid var(--border);border-radius:10px;background:var(--surface);cursor:pointer;font-size:14px;display:flex;justify-content:space-between;align-items:center;gap:8px;transition:border-color .15s;font-family:inherit">
+          <span style="font-weight:600">${escHtml(a.quiz_title)}</span>
+          ${a.duration_minutes ? `<span style="font-size:12px;color:#6366f1;background:#eef2ff;padding:2px 8px;border-radius:99px;white-space:nowrap">⏱ ${a.duration_minutes}m</span>` : ''}
+        </button>
+      `).join('');
+      showScreen('screen-picker');
+      return;
     }
 
-    document.getElementById('student-quiz-title').textContent = data.quiz_title;
-    document.getElementById('student-quiz-sub').textContent =
-      `Class: ${data.class_name} · ${data.questions.length} question${data.questions.length !== 1 ? 's' : ''}`;
-    showScreen('screen-student');
-    document.getElementById('student-name').focus();
+    _loadAssignmentData(data);
   } catch {
     showError('class-error', 'Network error. Please try again.');
   } finally {
     btn.disabled = false;
     btn.textContent = 'Continue →';
   }
+}
+
+async function pickAssignment(code, assignmentId) {
+  const list = document.getElementById('picker-list');
+  list.querySelectorAll('button').forEach(b => b.disabled = true);
+
+  try {
+    const res  = await fetch(apiBase() + '/api/take/' + encodeURIComponent(code) + '?assignment_id=' + encodeURIComponent(assignmentId));
+    const data = await res.json();
+    if (!res.ok) { alert(data.error || 'Could not load test.'); return; }
+    _loadAssignmentData(data);
+  } catch {
+    alert('Network error. Please try again.');
+  } finally {
+    list.querySelectorAll('button').forEach(b => b.disabled = false);
+  }
+}
+
+function _loadAssignmentData(data) {
+  _assignment = data;
+
+  // Show timer notice if duration set
+  const noticeEl = document.getElementById('student-timer-notice');
+  if (data.duration_minutes) {
+    document.getElementById('student-timer-mins').textContent = data.duration_minutes;
+    noticeEl.style.display = '';
+  } else {
+    noticeEl.style.display = 'none';
+  }
+
+  document.getElementById('student-quiz-title').textContent = data.quiz_title;
+  document.getElementById('student-quiz-sub').textContent =
+    `Class: ${data.class_name} · ${data.questions.length} question${data.questions.length !== 1 ? 's' : ''}`;
+  showScreen('screen-student');
+  document.getElementById('student-name').focus();
 }
 
 // ── Screen 2: student details ──────────────────────────────────────────────────
@@ -526,10 +578,11 @@ async function submitQuiz(autoSubmit = false) {
     ? '<span class="spinner"></span> Time\'s up — submitting…'
     : '<span class="spinner"></span> Submitting…';
 
+  // Send all questions; unanswered ones have chosen_index null (server treats as wrong)
   const answersPayload = _assignment.questions.map(q => ({
     question_id:  q.id,
-    chosen_index: _answers[q.id] ?? -1,
-  })).filter(a => a.chosen_index !== -1);
+    chosen_index: _answers[q.id] !== undefined ? _answers[q.id] : null,
+  }));
 
   try {
     const res  = await fetch(apiBase() + '/api/take/' + encodeURIComponent(_assignment.class_name) + '/submit', {

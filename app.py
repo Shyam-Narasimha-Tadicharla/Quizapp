@@ -1848,13 +1848,22 @@ def take_page():
 @app.route("/api/take/<class_name>", methods=["GET"])
 def get_take_quiz(class_name: str):
     """
-    Public — student enters a class name, gets back the active assignment's quiz.
-    Handles all three modes; applies shuffles if enabled.
+    Public — student enters a class name, gets back active assignment(s).
+
+    If only one active assignment exists for the class code, returns it directly
+    in the same shape as before (for backwards compatibility with take.html).
+
+    If multiple exist, returns { multiple: true, assignments: [{id, quiz_title, duration_minutes}, ...] }
+    so take.html can show a picker. The student then calls this endpoint with
+    ?assignment_id=<id> to load the specific assignment.
+
     Does NOT include correct answers.
     """
+    assignment_id_filter = request.args.get("assignment_id", "").strip() or None
     now = datetime.now(timezone.utc)
+
     with Session(_engine) as session:
-        a = session.execute(
+        base_query = (
             select(Assignment)
             .where(func.lower(Assignment.class_name) == class_name.strip().lower())
             .where(
@@ -1865,11 +1874,44 @@ def get_take_quiz(class_name: str):
                 (func.date(Assignment.closes_at) >= func.date(now))
             )
             .order_by(Assignment.created_at.desc())
-            .limit(1)
-        ).scalar_one_or_none()
+        )
 
-        if a is None:
+        if assignment_id_filter:
+            # Student selected a specific assignment from the picker
+            assignments = session.execute(
+                base_query.where(Assignment.id == assignment_id_filter)
+            ).scalars().all()
+        else:
+            assignments = session.execute(base_query).scalars().all()
+
+        if not assignments:
             return jsonify({"error": "No active assignment found for this class."}), 404
+
+        # Multiple assignments and no specific one selected — return the picker list
+        if len(assignments) > 1 and not assignment_id_filter:
+            quiz_ids = [a.quiz_id for a in assignments if a.quiz_id]
+            quiz_titles = {}
+            if quiz_ids:
+                quiz_rows = session.execute(
+                    select(Quiz.id, Quiz.title).where(Quiz.id.in_(quiz_ids))
+                ).all()
+                quiz_titles = {r.id: r.title for r in quiz_rows}
+
+            return jsonify({
+                "multiple": True,
+                "class_name": assignments[0].class_name,
+                "assignments": [
+                    {
+                        "id":               a.id,
+                        "quiz_title":       quiz_titles.get(a.quiz_id, "Quiz") if a.quiz_id else "Quiz",
+                        "duration_minutes": a.duration_minutes,
+                    }
+                    for a in assignments
+                ],
+            })
+
+        # Single assignment — load and return the full quiz data
+        a = assignments[0]
 
         if a.mode == "total_random":
             # Live paper: pick questions fresh for this student from topic_rules
@@ -2007,8 +2049,8 @@ def submit_quiz(class_name: str):
 
     if not assignment_id or not student_name or not roll_number:
         return jsonify({"error": "assignment_id, student_name, and roll_number are required."}), 400
-    if not isinstance(raw_answers, list) or len(raw_answers) == 0:
-        return jsonify({"error": "answers must be a non-empty array."}), 400
+    if not isinstance(raw_answers, list):
+        raw_answers = []
 
     now = datetime.now(timezone.utc)
 
