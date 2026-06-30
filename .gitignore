@@ -4,3 +4,4 @@ __pycache__/
 *.pyo
 data/*.json
 .env
+next_steps.txt
