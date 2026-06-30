@@ -22,6 +22,8 @@ Protected routes (JWT required)
 
 import os
 import re
+import io
+import csv
 import uuid
 import random
 import logging
@@ -1886,6 +1888,101 @@ def get_assignment_results(assignment_id: str):
             })
 
     return jsonify({"results": out})
+
+
+@app.route("/api/assignments/<assignment_id>/results/csv", methods=["GET"])
+@require_auth
+def get_assignment_results_csv(assignment_id: str):
+    with Session(_engine) as session:
+        a = session.execute(
+            select(Assignment)
+            .where(Assignment.id == assignment_id)
+            .where(Assignment.school_id == g.school_id)
+        ).scalar_one_or_none()
+        if a is None:
+            return jsonify({"error": "Assignment not found."}), 404
+
+        quiz = session.get(Quiz, a.quiz_id)
+        quiz_title = quiz.title if quiz else "Quiz"
+
+        results = session.execute(
+            select(Result)
+            .where(Result.assignment_id == assignment_id)
+            .where(Result.is_complete == True)  # noqa: E712
+            .order_by(Result.submitted_at)
+        ).scalars().all()
+
+        # Collect all topic scores in one bulk query
+        result_ids = [r.id for r in results]
+        topic_rows = session.execute(
+            select(ResultTopicScore)
+            .where(ResultTopicScore.result_id.in_(result_ids))
+        ).scalars().all()
+
+        # Index topic scores by result_id
+        topic_by_result: dict = {}
+        all_topics: list = []
+        for ts in topic_rows:
+            topic_by_result.setdefault(ts.result_id, {})[ts.topic] = ts
+            if ts.topic not in all_topics:
+                all_topics.append(ts.topic)
+        all_topics = sorted(all_topics)
+
+        # Build CSV in memory
+        output = io.StringIO()
+        writer = csv.writer(output)
+
+        # Header block
+        writer.writerow([f"Assignment: {quiz_title}"])
+        writer.writerow([f"Class: {a.class_name}"])
+        writer.writerow([f"Date: {a.created_at.strftime('%Y-%m-%d') if a.created_at else ''}"])
+        writer.writerow([])
+
+        # Column headers
+        writer.writerow(["Roll No", "Student Name", "Score (%)", "Correct", "Total"] + all_topics)
+
+        total_score = 0
+        total_possible = 0
+        topic_totals: dict = {t: {"correct": 0, "total": 0} for t in all_topics}
+
+        for r in results:
+            pct = round(r.score / r.total * 100) if r.total else 0
+            topic_cells = []
+            ts_map = topic_by_result.get(r.id, {})
+            for t in all_topics:
+                ts = ts_map.get(t)
+                if ts:
+                    topic_cells.append(round(ts.correct / ts.total * 100) if ts.total else 0)
+                    topic_totals[t]["correct"] += ts.correct
+                    topic_totals[t]["total"] += ts.total
+                else:
+                    topic_cells.append("")
+            writer.writerow([r.roll_number, r.student_name, pct, r.score, r.total] + topic_cells)
+            total_score += r.score
+            total_possible += r.total
+
+        # Average row
+        n = len(results)
+        avg_pct = round(total_score / total_possible * 100) if total_possible else 0
+        avg_correct = round(total_score / n, 1) if n else 0
+        avg_total = round(total_possible / n, 1) if n else 0
+        avg_topics = []
+        for t in all_topics:
+            tt = topic_totals[t]
+            avg_topics.append(round(tt["correct"] / tt["total"] * 100) if tt["total"] else "")
+        writer.writerow(["Class Average", "—", avg_pct, avg_correct, avg_total] + avg_topics)
+
+    csv_bytes = output.getvalue().encode("utf-8-sig")  # BOM for Excel compatibility
+    safe_title = re.sub(r"[^\w\s-]", "", quiz_title).strip().replace(" ", "_")
+    filename = f"{safe_title}_{a.class_name}_results.csv"
+    return (
+        csv_bytes,
+        200,
+        {
+            "Content-Type": "text/csv; charset=utf-8",
+            "Content-Disposition": f'attachment; filename="{filename}"',
+        },
+    )
 
 
 @app.route("/api/assignments/<assignment_id>/analytics", methods=["GET"])

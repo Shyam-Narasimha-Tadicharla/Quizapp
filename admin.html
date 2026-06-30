@@ -1112,10 +1112,11 @@
       <div id="results-detail-view" style="display:none">
         <div style="display:flex;align-items:center;gap:12px;margin-bottom:1.25rem;flex-wrap:wrap">
           <button class="btn btn-ghost btn-sm" onclick="closeResultDetail()">← Back</button>
-          <div>
+          <div style="flex:1">
             <div style="font-size:16px;font-weight:700" id="rd-title"></div>
             <div style="font-size:12px;color:var(--ink-dim)" id="rd-sub"></div>
           </div>
+          <button class="btn btn-sm" id="rd-csv-btn" style="display:none" onclick="downloadResultsCsv()">⬇ Download CSV</button>
         </div>
         <div class="tab-bar">
           <button class="tab-btn active" id="tab-students" onclick="switchTab('students')">Students</button>
@@ -3002,8 +3003,11 @@ async function openResultDetail(assignmentId) {
         '<div style="color:var(--ink-dim);font-size:13px">No submissions yet.</div>';
       document.getElementById('rd-student-table').innerHTML = '';
       document.getElementById('rd-summary').innerHTML = '';
+      document.getElementById('rd-csv-btn').style.display = 'none';
       return;
     }
+
+    document.getElementById('rd-csv-btn').style.display = '';
 
     const avg = Math.round(results.reduce((s, r) => s + r.percent, 0) / results.length);
     const best = Math.max(...results.map(r => r.percent));
@@ -3183,6 +3187,21 @@ function buildTopicSummary(results) {
 function closeResultDetail() {
   document.getElementById('results-list-view').style.display   = '';
   document.getElementById('results-detail-view').style.display = 'none';
+  document.getElementById('rd-csv-btn').style.display = 'none';
+}
+
+async function downloadResultsCsv() {
+  const assignmentId = _currentAnalyticsId;
+  if (!assignmentId) return;
+  const res = await fetch(apiBase() + `/api/assignments/${assignmentId}/results/csv`, { headers: authHeaders() });
+  if (!res.ok) { alert('Failed to download CSV.'); return; }
+  const blob = await res.blob();
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href     = url;
+  a.download = res.headers.get('Content-Disposition')?.match(/filename="(.+)"/)?.[1] || 'results.csv';
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 // ─── Class Report panel ───────────────────────────────────────────────────────
