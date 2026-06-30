@@ -1730,13 +1730,43 @@ def get_assignment_results(assignment_id: str):
                 q = question_lookup.get(ans.question_id)
                 answers_out.append({
                     "question_id":    ans.question_id,
-                    "question_text":  q.text    if q else None,
-                    "options":        q.options  if q else [],
-                    "correct_index":  q.correct_index if q else None,
-                    "topic":          q.topic    if q else None,
+                    "question_text":  q.text          if q else None,
+                    "options":        q.options        if q else [],
+                    "correct_index":  q.correct_index  if q else None,
+                    "topic":          q.topic          if q else None,
                     "chosen_index":   ans.chosen_index,
                     "is_correct":     ans.is_correct,
                 })
+
+            # If no stored topic scores (pre-Phase-4 submissions), derive from answers
+            if topic_rows:
+                topic_scores_out = [
+                    {
+                        "topic":   ts.topic,
+                        "correct": ts.correct,
+                        "total":   ts.total,
+                        "percent": round(ts.correct / ts.total * 100) if ts.total else 0,
+                    }
+                    for ts in sorted(topic_rows, key=lambda x: x.topic)
+                ]
+            else:
+                acc: dict = {}
+                for ans in answers_out:
+                    topic = ans["topic"] or "Untagged"
+                    if topic not in acc:
+                        acc[topic] = {"correct": 0, "total": 0}
+                    acc[topic]["total"] += 1
+                    if ans["is_correct"]:
+                        acc[topic]["correct"] += 1
+                topic_scores_out = [
+                    {
+                        "topic":   t,
+                        "correct": v["correct"],
+                        "total":   v["total"],
+                        "percent": round(v["correct"] / v["total"] * 100) if v["total"] else 0,
+                    }
+                    for t, v in sorted(acc.items())
+                ]
 
             out.append({
                 "id":           r.id,
@@ -1747,16 +1777,8 @@ def get_assignment_results(assignment_id: str):
                 "total":        r.total,
                 "percent":      round(r.score / r.total * 100) if r.total else 0,
                 "submitted_at": r.submitted_at.isoformat(),
-                "topic_scores": [
-                    {
-                        "topic":   ts.topic,
-                        "correct": ts.correct,
-                        "total":   ts.total,
-                        "percent": round(ts.correct / ts.total * 100) if ts.total else 0,
-                    }
-                    for ts in sorted(topic_rows, key=lambda x: x.topic)
-                ],
-                "answers": answers_out,
+                "topic_scores": topic_scores_out,
+                "answers":      answers_out,
             })
 
     return jsonify({"results": out})
