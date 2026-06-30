@@ -1624,6 +1624,29 @@ def create_assignment():
     return jsonify({"id": aid, "class_name": class_name, "quiz_id": quiz_id, "mode": mode}), 201
 
 
+@app.route("/api/assignments/<assignment_id>", methods=["PATCH"])
+@require_auth
+def update_assignment(assignment_id: str):
+    """Rename an assignment (update class_name). Teacher or admin."""
+    body       = request.get_json(silent=True) or {}
+    class_name = (body.get("class_name") or "").strip()
+    if not class_name:
+        return jsonify({"error": "class_name is required."}), 400
+
+    with Session(_engine) as session:
+        a = session.execute(
+            select(Assignment)
+            .where(Assignment.id == assignment_id)
+            .where(Assignment.school_id == g.school_id)
+        ).scalar_one_or_none()
+        if a is None:
+            return jsonify({"error": "Assignment not found."}), 404
+        a.class_name = class_name
+        session.commit()
+
+    return jsonify({"id": assignment_id, "class_name": class_name})
+
+
 @app.route("/api/assignments/<assignment_id>", methods=["DELETE"])
 @require_auth
 def delete_assignment(assignment_id: str):

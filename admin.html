@@ -1922,6 +1922,9 @@ async function loadAssignments() {
         <button class="btn btn-sm btn-ghost" onclick="copyTakeLink('${escHtml(a.class_name)}')" title="Copy student link">
           🔗 Link
         </button>
+        <button class="btn btn-sm btn-ghost" onclick="renameAssignment('${a.id}','${escHtml(a.class_name)}')" title="Rename class code">
+          ✏ Rename
+        </button>
         ${isAdmin() ? `<button class="btn btn-sm btn-ghost" onclick="confirmDeleteAssignment('${a.id}','${escHtml(a.quiz_title || a.class_name)}')" style="color:var(--red)">✕</button>` : ''}
       </div>
     `).join('');
@@ -2171,6 +2174,37 @@ function confirmDeleteAssignment(id, title) {
       } catch (err) { toast(err.message, 'err'); }
     }
   );
+}
+
+function renameAssignment(id, currentName) {
+  document.getElementById('modal-title').textContent = 'Rename assignment';
+  document.getElementById('modal-body').innerHTML =
+    '<div style="font-size:12px;color:var(--ink-dim);margin-bottom:6px">New class code (students will use this to join)</div>' +
+    `<input class="inline-input" id="rename-class" value="${escHtml(currentName)}" style="width:100%" />`;
+  document.getElementById('modal-quiz-list').innerHTML = '';
+  document.getElementById('modal-confirm-btn').textContent = 'Save';
+  document.getElementById('modal-confirm-btn').style.cssText = 'background:var(--accent);border-color:var(--accent);color:#fff';
+  _modalAction = async () => {
+    const class_name = (document.getElementById('rename-class').value || '').trim();
+    if (!class_name) { toast('Class code cannot be empty.', 'err'); return; }
+    closeModal();
+    try {
+      const res  = await fetch(apiBase() + `/api/assignments/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ class_name }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      toast(`Renamed to "${class_name}".`, 'ok');
+      loadAssignments();
+    } catch (err) { toast(err.message, 'err'); }
+  };
+  document.getElementById('generic-modal').classList.add('open');
+  setTimeout(() => {
+    const el = document.getElementById('rename-class');
+    if (el) { el.focus(); el.select(); }
+  }, 50);
 }
 
 function copyTakeLink(className) {
