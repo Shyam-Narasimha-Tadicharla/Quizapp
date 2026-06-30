@@ -571,6 +571,56 @@
     }
     .inline-input:focus { border-color: var(--accent); }
 
+    /* ── Results panel ── */
+    .ra-row {
+      display: grid;
+      grid-template-columns: 1fr auto auto auto;
+      align-items: center; gap: 12px;
+      padding: 13px 16px;
+      border-bottom: 1px solid var(--border);
+      font-size: 13.5px; cursor: pointer;
+      transition: background .15s;
+    }
+    .ra-row:last-child { border-bottom: none; }
+    .ra-row:hover { background: var(--surface-2); }
+    .ra-title { font-weight: 600; color: var(--ink); }
+    .ra-meta  { font-size: 12px; color: var(--ink-dim); margin-top: 2px; }
+
+    .sr-row {
+      border-bottom: 1px solid var(--border);
+    }
+    .sr-row:last-child { border-bottom: none; }
+    .sr-head {
+      display: grid;
+      grid-template-columns: 2fr 1fr 1fr 80px 28px;
+      align-items: center; gap: 10px;
+      padding: 11px 16px;
+      cursor: pointer; transition: background .15s;
+      font-size: 13px;
+    }
+    .sr-head:hover { background: var(--surface-2); }
+    .sr-expand-icon { color: var(--ink-dim); font-size: 11px; text-align:center; transition: transform .2s; }
+    .sr-expand-icon.open { transform: rotate(90deg); }
+    .sr-detail {
+      display: none;
+      padding: 0 16px 14px;
+      border-top: 1px solid var(--border);
+      background: var(--surface-2);
+    }
+    .sr-detail.open { display: block; }
+
+    .topic-bar-row {
+      display: flex; align-items: center; gap: 10px;
+      margin-bottom: 6px; font-size: 12px;
+    }
+    .topic-bar-label { width: 160px; flex-shrink: 0; color: var(--ink-dim); }
+    .topic-bar-track {
+      flex: 1; height: 6px; border-radius: 99px;
+      background: var(--surface-3); overflow: hidden;
+    }
+    .topic-bar-fill  { height: 100%; border-radius: 99px; background: var(--accent); }
+    .topic-bar-pct   { width: 36px; text-align: right; color: var(--ink); font-weight: 600; }
+
     /* ── Auth screen ── */
     .auth-screen {
       display: none;
@@ -714,6 +764,9 @@
     <div class="nav-item" onclick="showPanel('assignments')" id="nav-assignments">
       <span class="nav-icon">📋</span> Assignments
       <span class="nav-count" id="assign-count">—</span>
+    </div>
+    <div class="nav-item" onclick="showPanel('results')" id="nav-results">
+      <span class="nav-icon">📈</span> Results
     </div>
     <div class="nav-item" onclick="showPanel('team')" id="nav-team" style="display:none">
       <span class="nav-icon">👥</span> Team
@@ -887,7 +940,30 @@
     </div><!-- /panel-assignments -->
 
     <!-- ═══════════════════════════════════════
-         PANEL 6 — Team (admin only)
+         PANEL 6 — Results
+    ═══════════════════════════════════════ -->
+    <div class="panel" id="panel-results">
+      <div id="results-list-view">
+        <div class="card" id="results-assignments-body">
+          <div class="card-body" style="text-align:center;color:var(--ink-dim);font-size:13px">Loading…</div>
+        </div>
+      </div>
+      <div id="results-detail-view" style="display:none">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:1.25rem;flex-wrap:wrap">
+          <button class="btn btn-ghost btn-sm" onclick="closeResultDetail()">← Back</button>
+          <div>
+            <div style="font-size:16px;font-weight:700" id="rd-title"></div>
+            <div style="font-size:12px;color:var(--ink-dim)" id="rd-sub"></div>
+          </div>
+        </div>
+        <div class="stat-row" style="margin-bottom:1.25rem" id="rd-stats"></div>
+        <div class="card" id="rd-student-table"></div>
+        <div class="card" id="rd-summary" style="margin-top:1.25rem"></div>
+      </div>
+    </div><!-- /panel-results -->
+
+    <!-- ═══════════════════════════════════════
+         PANEL 7 — Team (admin only)
     ═══════════════════════════════════════ -->
     <div class="panel" id="panel-team">
 
@@ -1136,6 +1212,7 @@ const PANELS = {
   library: { title: 'Quiz Library',     sub: 'All saved quizzes' },
   bank:    { title: 'Question Bank',    sub: 'All questions across all quizzes' },
   assignments: { title: 'Assignments', sub: 'Assign quizzes to classes and view results' },
+  results:     { title: 'Results',     sub: 'View student performance across all assignments' },
   team:        { title: 'Team',        sub: 'Manage subjects, teachers and access' },
 };
 
@@ -1152,6 +1229,7 @@ function showPanel(name) {
   if (name === 'library')     { loadLibrary(); }
   if (name === 'bank')        { loadBank(); }
   if (name === 'assignments') { loadAssignments(); }
+  if (name === 'results')     { loadResultsPanel(); }
   if (name === 'team')        { loadTeam(); }
 }
 
@@ -2526,6 +2604,246 @@ function confirmDeleteTeacher(userId, email) {
       } catch (err) { toast(err.message, 'err'); }
     }
   );
+}
+
+// ─── Results panel ────────────────────────────────────────────────────────────
+let _resultsAssignments = [];
+
+async function loadResultsPanel() {
+  document.getElementById('results-list-view').style.display   = '';
+  document.getElementById('results-detail-view').style.display = 'none';
+
+  const body = document.getElementById('results-assignments-body');
+  body.innerHTML = '<div class="card-body" style="text-align:center;color:var(--ink-dim);font-size:13px">Loading…</div>';
+
+  try {
+    const res  = await fetch(apiBase() + '/api/assignments', { headers: authHeaders() });
+    if (res.status === 401) { clearSession(); showLogin(); return; }
+    const data = await res.json();
+    _resultsAssignments = data.assignments || [];
+
+    if (_resultsAssignments.length === 0) {
+      body.innerHTML = '<div class="lib-empty"><div class="lib-empty-icon">📊</div>No assignments yet.</div>';
+      return;
+    }
+
+    body.innerHTML = _resultsAssignments.map(a => `
+      <div class="ra-row" onclick="openResultDetail('${a.id}')">
+        <div>
+          <div class="ra-title">
+            ${a.mode === 'total_random' ? '<em style="color:var(--ink-dim)">Live paper</em>' : escHtml(a.quiz_title || '—')}
+            ${a.mode === 'total_random'
+              ? '<span style="font-size:10px;padding:1px 7px;border-radius:99px;background:rgba(251,191,36,.15);color:var(--amber);font-weight:600;margin-left:6px">⚡ live random</span>'
+              : a.mode === 'randomized'
+              ? '<span style="font-size:10px;padding:1px 7px;border-radius:99px;background:rgba(123,110,246,.15);color:var(--accent-hi);font-weight:600;margin-left:6px">🎲 randomized</span>'
+              : ''}
+          </div>
+          <div class="ra-meta">
+            <span class="assign-class">${escHtml(a.class_name)}</span>
+            ${a.closes_at ? ` · closes ${fmtDate(a.closes_at)}` : ''}
+          </div>
+        </div>
+        <div style="font-size:12px;color:var(--ink-dim)">View results →</div>
+      </div>
+    `).join('');
+  } catch (err) {
+    body.innerHTML = `<div class="card-body" style="color:var(--red);font-size:13px">${err.message}</div>`;
+  }
+}
+
+async function openResultDetail(assignmentId) {
+  const a = _resultsAssignments.find(x => x.id === assignmentId);
+  document.getElementById('results-list-view').style.display   = 'none';
+  document.getElementById('results-detail-view').style.display = '';
+
+  document.getElementById('rd-title').textContent =
+    a ? (a.mode === 'total_random' ? 'Live paper' : (a.quiz_title || '—')) : '—';
+  document.getElementById('rd-sub').textContent =
+    a ? `Class: ${a.class_name}${a.closes_at ? ' · closes ' + fmtDate(a.closes_at) : ''}` : '';
+  document.getElementById('rd-stats').innerHTML  = '<div style="color:var(--ink-dim);font-size:13px">Loading…</div>';
+  document.getElementById('rd-student-table').innerHTML = '';
+  document.getElementById('rd-summary').innerHTML = '';
+
+  try {
+    const res  = await fetch(apiBase() + `/api/assignments/${assignmentId}/results`, { headers: authHeaders() });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+
+    const results = data.results || [];
+
+    // Stats row
+    if (results.length === 0) {
+      document.getElementById('rd-stats').innerHTML =
+        '<div style="color:var(--ink-dim);font-size:13px">No submissions yet.</div>';
+      document.getElementById('rd-student-table').innerHTML = '';
+      document.getElementById('rd-summary').innerHTML = '';
+      return;
+    }
+
+    const avg = Math.round(results.reduce((s, r) => s + r.percent, 0) / results.length);
+    const best = Math.max(...results.map(r => r.percent));
+    const low  = Math.min(...results.map(r => r.percent));
+    document.getElementById('rd-stats').innerHTML = `
+      <div class="stat-card"><div class="stat-val">${results.length}</div><div class="stat-label">Submissions</div></div>
+      <div class="stat-card"><div class="stat-val">${avg}%</div><div class="stat-label">Class average</div></div>
+      <div class="stat-card"><div class="stat-val">${best}%</div><div class="stat-label">Highest</div></div>
+      <div class="stat-card"><div class="stat-val">${low}%</div><div class="stat-label">Lowest</div></div>`;
+
+    // Student table
+    const tableHtml = `
+      <div style="padding:0">
+        <div style="display:grid;grid-template-columns:2fr 1fr 1fr 80px 28px;gap:10px;
+          padding:8px 16px;border-bottom:1px solid var(--border);
+          font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-dim)">
+          <div>Student</div><div>Roll</div><div>Score</div><div>%</div><div></div>
+        </div>
+        ${results.map(r => buildStudentRow(r)).join('')}
+      </div>`;
+    document.getElementById('rd-student-table').innerHTML = tableHtml;
+
+    // Class topic summary
+    document.getElementById('rd-summary').innerHTML = buildTopicSummary(results);
+
+  } catch (err) {
+    document.getElementById('rd-stats').innerHTML =
+      `<div style="color:var(--red);font-size:13px">${err.message}</div>`;
+  }
+}
+
+function buildStudentRow(r) {
+  const pctClass = r.percent >= 80 ? 'pct-high' : r.percent >= 50 ? 'pct-mid' : 'pct-low';
+  const rowId    = 'sr-' + r.id;
+
+  // Per-answer breakdown grouped by topic
+  const byTopic = {};
+  (r.answers || []).forEach(ans => {
+    const t = ans.topic || 'Untagged';
+    if (!byTopic[t]) byTopic[t] = [];
+    byTopic[t].push(ans);
+  });
+
+  const LETTERS = ['A','B','C','D','E'];
+
+  const topicRows = (r.topic_scores || []).map(ts => {
+    const pct = ts.percent;
+    const color = pct >= 80 ? 'var(--green)' : pct >= 50 ? 'var(--amber)' : 'var(--red)';
+    return `
+      <div style="margin-bottom:10px">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
+          <div style="font-size:12px;font-weight:600;color:var(--ink)">${escHtml(ts.topic)}</div>
+          <div style="font-size:11px;color:${color};font-weight:600">${ts.correct}/${ts.total} (${pct}%)</div>
+        </div>
+        ${(byTopic[ts.topic] || []).map(ans => {
+          const isCorrect = ans.is_correct;
+          const chosenLabel  = ans.chosen_index !== null && ans.options[ans.chosen_index] !== undefined
+            ? `${LETTERS[ans.chosen_index]}) ${escHtml(ans.options[ans.chosen_index])}` : '—';
+          const correctLabel = ans.correct_index !== null && ans.options[ans.correct_index] !== undefined
+            ? `${LETTERS[ans.correct_index]}) ${escHtml(ans.options[ans.correct_index])}` : '—';
+          return `
+            <div style="font-size:12px;padding:6px 8px;border-radius:6px;margin-bottom:4px;
+              background:${isCorrect ? 'rgba(52,211,153,.08)' : 'rgba(248,113,113,.08)'};
+              border:1px solid ${isCorrect ? 'rgba(52,211,153,.2)' : 'rgba(248,113,113,.2)'}">
+              <div style="color:var(--ink);margin-bottom:2px">${escHtml(ans.question_text || '(deleted question)')}</div>
+              <div style="color:var(--ink-dim)">
+                Answered: <strong style="color:${isCorrect ? 'var(--green)' : 'var(--red)'}">${chosenLabel}</strong>
+                ${!isCorrect ? `&nbsp;·&nbsp; Correct: <strong style="color:var(--green)">${correctLabel}</strong>` : ''}
+              </div>
+            </div>`;
+        }).join('')}
+      </div>`;
+  }).join('');
+
+  // If no topic scores yet (old submissions), show plain answer list
+  const detailContent = r.topic_scores && r.topic_scores.length > 0
+    ? topicRows
+    : (r.answers || []).map(ans => {
+        const isCorrect   = ans.is_correct;
+        const chosenLabel = ans.chosen_index !== null && ans.options && ans.options[ans.chosen_index] !== undefined
+          ? `${LETTERS[ans.chosen_index]}) ${escHtml(ans.options[ans.chosen_index])}` : '—';
+        const correctLabel = ans.correct_index !== null && ans.options && ans.options[ans.correct_index] !== undefined
+          ? `${LETTERS[ans.correct_index]}) ${escHtml(ans.options[ans.correct_index])}` : '—';
+        return `
+          <div style="font-size:12px;padding:6px 8px;border-radius:6px;margin-bottom:4px;
+            background:${isCorrect ? 'rgba(52,211,153,.08)' : 'rgba(248,113,113,.08)'};
+            border:1px solid ${isCorrect ? 'rgba(52,211,153,.2)' : 'rgba(248,113,113,.2)'}">
+            <div style="color:var(--ink);margin-bottom:2px">${escHtml(ans.question_text || '(deleted question)')}</div>
+            <div style="color:var(--ink-dim)">
+              Answered: <strong style="color:${isCorrect ? 'var(--green)' : 'var(--red)'}">${chosenLabel}</strong>
+              ${!isCorrect ? `&nbsp;·&nbsp; Correct: <strong style="color:var(--green)">${correctLabel}</strong>` : ''}
+            </div>
+          </div>`;
+      }).join('');
+
+  return `
+    <div class="sr-row">
+      <div class="sr-head" onclick="toggleStudentRow('${rowId}')">
+        <div style="font-weight:500;color:var(--ink)">${escHtml(r.student_name)}</div>
+        <div style="color:var(--ink-dim)">${escHtml(r.roll_number)}</div>
+        <div>${r.score} / ${r.total}</div>
+        <div><span class="pct-badge ${pctClass}">${r.percent}%</span></div>
+        <div class="sr-expand-icon" id="${rowId}-icon">▶</div>
+      </div>
+      <div class="sr-detail" id="${rowId}">
+        <div style="padding-top:12px">
+          <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;
+            color:var(--ink-dim);margin-bottom:10px">Submitted ${fmtDate(r.submitted_at)}</div>
+          ${detailContent || '<div style="color:var(--ink-dim);font-size:12px">No answer data available.</div>'}
+        </div>
+      </div>
+    </div>`;
+}
+
+function toggleStudentRow(rowId) {
+  const detail = document.getElementById(rowId);
+  const icon   = document.getElementById(rowId + '-icon');
+  if (!detail) return;
+  const isOpen = detail.classList.contains('open');
+  detail.classList.toggle('open', !isOpen);
+  icon.classList.toggle('open', !isOpen);
+}
+
+function buildTopicSummary(results) {
+  // Aggregate topic scores across all students
+  const topicAcc = {};
+  results.forEach(r => {
+    (r.topic_scores || []).forEach(ts => {
+      if (!topicAcc[ts.topic]) topicAcc[ts.topic] = { correct: 0, total: 0, students: 0 };
+      topicAcc[ts.topic].correct  += ts.correct;
+      topicAcc[ts.topic].total    += ts.total;
+      topicAcc[ts.topic].students += 1;
+    });
+  });
+
+  const topics = Object.entries(topicAcc);
+  if (topics.length === 0) return '';
+
+  const rows = topics.sort((a, b) => a[0].localeCompare(b[0])).map(([topic, acc]) => {
+    const pct   = acc.total ? Math.round(acc.correct / acc.total * 100) : 0;
+    const color = pct >= 80 ? 'var(--green)' : pct >= 50 ? 'var(--amber)' : 'var(--red)';
+    return `
+      <div class="topic-bar-row">
+        <div class="topic-bar-label">${escHtml(topic)}</div>
+        <div class="topic-bar-track">
+          <div class="topic-bar-fill" style="width:${pct}%;background:${color}"></div>
+        </div>
+        <div class="topic-bar-pct" style="color:${color}">${pct}%</div>
+        <div style="font-size:11px;color:var(--ink-dim);width:80px">${acc.correct}/${acc.total} correct</div>
+      </div>`;
+  }).join('');
+
+  return `
+    <div class="card-body">
+      <div style="font-size:13px;font-weight:600;color:var(--ink);margin-bottom:12px">
+        Class topic performance
+        <span style="font-size:11px;font-weight:400;color:var(--ink-dim);margin-left:6px">across all ${results.length} submission${results.length !== 1 ? 's' : ''}</span>
+      </div>
+      ${rows}
+    </div>`;
+}
+
+function closeResultDetail() {
+  document.getElementById('results-list-view').style.display   = '';
+  document.getElementById('results-detail-view').style.display = 'none';
 }
 </script>
 </body>

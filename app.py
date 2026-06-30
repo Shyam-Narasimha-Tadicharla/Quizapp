@@ -1690,7 +1690,10 @@ def delete_assignment(assignment_id: str):
 @app.route("/api/assignments/<assignment_id>/results", methods=["GET"])
 @require_auth
 def get_assignment_results(assignment_id: str):
-    """Get all student results for an assignment with per-question breakdown."""
+    """
+    Get all student results for an assignment.
+    Includes per-topic scores and per-answer breakdown with question text.
+    """
     with Session(_engine) as session:
         a = session.execute(
             select(Assignment)
@@ -1706,11 +1709,35 @@ def get_assignment_results(assignment_id: str):
             .order_by(Result.submitted_at)
         ).scalars().all()
 
+        # Pre-load all questions for this school so we can attach text to answers
+        all_questions = session.execute(
+            select(Question).where(Question.school_id == g.school_id)
+        ).scalars().all()
+        question_lookup = {q.id: q for q in all_questions}
+
         out = []
         for r in results:
             ans_rows = session.execute(
                 select(Answer).where(Answer.result_id == r.id)
             ).scalars().all()
+
+            topic_rows = session.execute(
+                select(ResultTopicScore).where(ResultTopicScore.result_id == r.id)
+            ).scalars().all()
+
+            answers_out = []
+            for ans in ans_rows:
+                q = question_lookup.get(ans.question_id)
+                answers_out.append({
+                    "question_id":    ans.question_id,
+                    "question_text":  q.text    if q else None,
+                    "options":        q.options  if q else [],
+                    "correct_index":  q.correct_index if q else None,
+                    "topic":          q.topic    if q else None,
+                    "chosen_index":   ans.chosen_index,
+                    "is_correct":     ans.is_correct,
+                })
+
             out.append({
                 "id":           r.id,
                 "student_name": r.student_name,
@@ -1720,14 +1747,16 @@ def get_assignment_results(assignment_id: str):
                 "total":        r.total,
                 "percent":      round(r.score / r.total * 100) if r.total else 0,
                 "submitted_at": r.submitted_at.isoformat(),
-                "answers": [
+                "topic_scores": [
                     {
-                        "question_id":  ans.question_id,
-                        "chosen_index": ans.chosen_index,
-                        "is_correct":   ans.is_correct,
+                        "topic":   ts.topic,
+                        "correct": ts.correct,
+                        "total":   ts.total,
+                        "percent": round(ts.correct / ts.total * 100) if ts.total else 0,
                     }
-                    for ans in ans_rows
+                    for ts in sorted(topic_rows, key=lambda x: x.topic)
                 ],
+                "answers": answers_out,
             })
 
     return jsonify({"results": out})
