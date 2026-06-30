@@ -221,6 +221,7 @@
   <!-- ── Screen 2: Enter student details ── -->
   <div class="screen" id="screen-student">
     <div class="card">
+      <button onclick="goBack('screen-class')" style="background:none;border:none;color:var(--ink-dim);font-size:13px;cursor:pointer;padding:0;margin-bottom:1rem;display:flex;align-items:center;gap:5px">← Back</button>
       <div class="card-title" id="student-quiz-title">Quiz</div>
       <div class="card-sub" id="student-quiz-sub"></div>
       <div id="student-timer-notice" style="display:none;font-size:13px;color:#f59e0b;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.25);border-radius:8px;padding:8px 12px;margin-bottom:1rem">
@@ -243,6 +244,9 @@
   <div class="screen" id="screen-quiz">
     <div class="card">
       <div class="quiz-header">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:.5rem">
+          <button onclick="goBack('screen-student')" style="background:none;border:none;color:var(--ink-dim);font-size:13px;cursor:pointer;padding:0;display:flex;align-items:center;gap:5px">← Back</button>
+        </div>
         <div class="quiz-title" id="quiz-title-display"></div>
         <div class="quiz-meta"  id="quiz-meta-display"></div>
       </div>
@@ -292,6 +296,26 @@ function apiBase() { return window.location.origin; }
 function showScreen(id) {
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
   document.getElementById(id).classList.add('active');
+}
+
+function goBack(targetScreen) {
+  if (targetScreen === 'screen-student') {
+    // Going back from quiz screen — confirm if any answers filled
+    const answered = Object.keys(_answers).length;
+    if (answered > 0 && !confirm('Go back? Your answers will be lost.')) return;
+    stopTimer();
+    clearAnswers();
+    _answers   = {};
+    _resultId  = null;
+    document.getElementById('timer-bar').style.display = 'none';
+  }
+  if (targetScreen === 'screen-class') {
+    // Going back to class entry — clear student fields
+    document.getElementById('student-name').value = '';
+    document.getElementById('student-roll').value = '';
+    clearError('student-error');
+  }
+  showScreen(targetScreen);
 }
 function showError(elId, msg) {
   const el = document.getElementById(elId);
