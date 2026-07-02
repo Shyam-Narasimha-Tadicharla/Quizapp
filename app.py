@@ -1000,6 +1000,7 @@ def delete_user(user_id: str):
             return jsonify({"error": "Cannot delete a superadmin account."}), 403
 
         auth_id = user.auth_id
+        email   = user.email
         session.delete(user)
         session.commit()
 
@@ -1017,11 +1018,10 @@ def delete_user(user_id: str):
         with urllib.request.urlopen(req) as resp:
             pass
     except urllib.error.HTTPError as exc:
-        # DB row already deleted — log the Supabase error but don't fail
         log.warning("Supabase auth delete failed for %s: %s", auth_id, exc.read())
 
-    log.info("User deleted: %s (%s)", user.email, user_id)
-    return jsonify({"message": f"User '{user.email}' deleted."}), 200
+    log.info("User deleted: %s (%s)", email, user_id)
+    return jsonify({"message": f"User '{email}' deleted."}), 200
 
 
 @app.route("/api/users/<user_id>/role", methods=["PATCH"])
@@ -1042,10 +1042,11 @@ def update_user_role(user_id: str):
             return jsonify({"error": "User not found."}), 404
         if user.role == "superadmin":
             return jsonify({"error": "Cannot change a superadmin's role."}), 403
+        email = user.email
         user.role = new_role
         session.commit()
 
-    log.info("User role updated: %s → %s (%s)", user.email, new_role, user_id)
+    log.info("User role updated: %s → %s (%s)", email, new_role, user_id)
     return jsonify({"message": f"Role updated to '{new_role}'.", "role": new_role}), 200
 
 
