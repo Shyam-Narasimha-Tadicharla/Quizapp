@@ -941,6 +941,9 @@
     <div class="nav-item" onclick="showPanel('team')" id="nav-team" style="display:none">
       <span class="nav-icon">👥</span> Team
     </div>
+    <div class="nav-item" onclick="showPanel('schools')" id="nav-schools" style="display:none">
+      <span class="nav-icon">🏫</span> Schools
+    </div>
 
     <div class="sidebar-footer">
       <div class="user-chip" id="user-chip" style="display:none">
@@ -1228,6 +1231,15 @@
 
     </div><!-- /panel-team -->
 
+    <!-- ═══════════════════════════════════════
+         PANEL — Schools (superadmin only)
+    ═══════════════════════════════════════ -->
+    <div class="panel" id="panel-schools">
+      <div class="card">
+        <div id="schools-body"></div>
+      </div>
+    </div><!-- /panel-schools -->
+
   </div><!-- /main -->
 </div><!-- /shell -->
 
@@ -1284,6 +1296,44 @@
     <div class="modal-actions">
       <button class="btn btn-ghost btn-sm" onclick="closeModal()">Cancel</button>
       <button class="btn btn-sm" id="modal-confirm-btn" style="background:var(--red);border-color:var(--red);color:#fff" onclick="modalConfirm()">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Delete school modal (superadmin) ── -->
+<div id="modal-delete-school" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:900;align-items:center;justify-content:center">
+  <div class="modal-box" style="max-width:400px;width:90%">
+    <div class="modal-title" style="color:var(--red)">Delete School</div>
+    <div class="modal-body" style="margin-bottom:1rem">
+      Permanently delete <strong id="del-school-name"></strong>? This cannot be undone.
+    </div>
+    <div style="margin-bottom:.75rem">
+      <label style="font-size:12px;color:var(--ink-dim);display:block;margin-bottom:4px">Setup secret</label>
+      <input id="del-school-secret" type="password" class="api-url-input" style="width:100%;padding:8px 10px;font-size:13px" placeholder="Enter setup secret to confirm" />
+    </div>
+    <div id="del-school-err" style="color:var(--red);font-size:12px;min-height:16px;margin-bottom:.5rem"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost btn-sm" onclick="closeDeleteSchoolModal()">Cancel</button>
+      <button id="del-school-btn" class="btn btn-sm" style="background:var(--red);border-color:var(--red);color:#fff" onclick="confirmDeleteSchool()">Delete</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Delete user modal (superadmin) ── -->
+<div id="modal-delete-user" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:900;align-items:center;justify-content:center">
+  <div class="modal-box" style="max-width:400px;width:90%">
+    <div class="modal-title" style="color:var(--red)">Delete User</div>
+    <div class="modal-body" style="margin-bottom:1rem">
+      Permanently delete <strong id="del-user-email"></strong>? This removes them from the platform and revokes their login.
+    </div>
+    <div style="margin-bottom:.75rem">
+      <label style="font-size:12px;color:var(--ink-dim);display:block;margin-bottom:4px">Setup secret</label>
+      <input id="del-user-secret" type="password" class="api-url-input" style="width:100%;padding:8px 10px;font-size:13px" placeholder="Enter setup secret to confirm" />
+    </div>
+    <div id="del-user-err" style="color:var(--red);font-size:12px;min-height:16px;margin-bottom:.5rem"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost btn-sm" onclick="closeDeleteUserModal()">Cancel</button>
+      <button id="del-user-btn" class="btn btn-sm" style="background:var(--red);border-color:var(--red);color:#fff" onclick="confirmDeleteUser()">Delete</button>
     </div>
   </div>
 </div>
@@ -1417,6 +1467,7 @@ function showApp() {
     document.getElementById('nav-team').style.display   = (role === 'admin' || role === 'superadmin') ? '' : 'none';
     // Superadmin: show school selector, hide upload
     const schoolSelectorEl = document.getElementById('school-selector-wrap');
+    document.getElementById('nav-schools').style.display = (role === 'superadmin') ? '' : 'none';
     if (role === 'superadmin') {
       document.getElementById('nav-upload').style.display = 'none';
       schoolSelectorEl.style.display = '';
@@ -1461,6 +1512,7 @@ const PANELS = {
   results:      { title: 'Results',      sub: 'View student performance across all assignments' },
   classreport:  { title: 'Class Report', sub: 'Cross-assignment performance by class' },
   team:         { title: 'Team',         sub: 'Manage subjects, teachers and access' },
+  schools:      { title: 'Schools',      sub: 'All registered schools' },
 };
 
 function _panelSub(name) {
@@ -1491,6 +1543,7 @@ function showPanel(name) {
   if (name === 'results')     { loadResultsPanel(); }
   if (name === 'classreport') { loadClassReportList(); }
   if (name === 'team')        { loadTeam(); }
+  if (name === 'schools')     { loadSchoolsPanel(); }
 }
 
 // ─── Superadmin school selector ───────────────────────────────────────────────
@@ -1528,6 +1581,231 @@ function onSchoolSelect() {
   // Update topbar subtitle
   document.getElementById('topbar-sub').textContent = _panelSub(name);
   showPanel(name);
+}
+
+// ─── Schools panel (superadmin) ───────────────────────────────────────────────
+async function loadSchoolsPanel() {
+  const body = document.getElementById('schools-body');
+  body.innerHTML = `<div class="card-body" style="text-align:center;padding:2rem;color:var(--ink-dim)"><span class="spinner" style="border-color:rgba(255,255,255,.1);border-top-color:var(--accent)"></span></div>`;
+  try {
+    const res  = await fetch(apiBase() + '/api/schools', { headers: authHeaders() });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not load schools.');
+    const schools = data.schools || [];
+    if (schools.length === 0) {
+      body.innerHTML = `<div class="card-body" style="color:var(--ink-dim);font-size:13px;padding:2rem;text-align:center">No schools registered yet.</div>`;
+      return;
+    }
+    body.innerHTML = `
+      <table class="quiz-table">
+        <thead>
+          <tr>
+            <th>School Name</th>
+            <th>Domain</th>
+            <th>Users</th>
+            <th>Quizzes</th>
+            <th>Created</th>
+            <th style="text-align:right">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${schools.map(s => {
+            const isEmpty = s.user_count === 0 && s.quiz_count === 0;
+            return `
+            <tr id="school-row-${escHtml(s.id)}">
+              <td class="td-title">${escHtml(s.name)}</td>
+              <td class="td-meta">${s.domain ? escHtml(s.domain) : '<span style="color:var(--ink-faint)">—</span>'}</td>
+              <td><span class="td-badge">${s.user_count}</span></td>
+              <td><span class="td-badge">${s.quiz_count}</span></td>
+              <td class="td-meta">${fmtDate(s.created_at)}</td>
+              <td style="text-align:right">
+                <button class="btn btn-sm btn-ghost" onclick="toggleSchoolUsers('${escHtml(s.id)}','${escHtml(s.name)}')">👁 View</button>
+                <button
+                  class="btn btn-sm btn-ghost"
+                  style="${isEmpty ? 'color:var(--red)' : 'color:var(--ink-faint);cursor:not-allowed;opacity:.4'}"
+                  ${isEmpty ? `onclick="openDeleteSchoolModal('${escHtml(s.id)}','${escHtml(s.name)}')"` : 'disabled title="School has users or quizzes — cannot delete"'}
+                >✕ Delete</button>
+              </td>
+            </tr>
+            <tr id="school-users-${escHtml(s.id)}" style="display:none">
+              <td colspan="6" style="padding:0">
+                <div id="school-users-body-${escHtml(s.id)}" style="padding:.75rem 1.25rem;background:var(--surface-2);border-top:1px solid var(--border)"></div>
+              </td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>`;
+  } catch (err) {
+    body.innerHTML = `<div class="card-body" style="color:var(--red);font-size:13px">${err.message}</div>`;
+  }
+}
+
+async function toggleSchoolUsers(schoolId, schoolName) {
+  const row = document.getElementById('school-users-' + schoolId);
+  if (!row) return;
+  if (row.style.display !== 'none') {
+    row.style.display = 'none';
+    return;
+  }
+  row.style.display = '';
+  const body = document.getElementById('school-users-body-' + schoolId);
+  body.innerHTML = `<span style="color:var(--ink-dim);font-size:13px">Loading…</span>`;
+  try {
+    const res  = await fetch(apiBase() + '/api/schools/' + schoolId + '/users', { headers: authHeaders() });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not load users.');
+    const users = data.users || [];
+    if (users.length === 0) {
+      body.innerHTML = `<span style="color:var(--ink-dim);font-size:13px">No users in this school.</span>`;
+      return;
+    }
+    body.innerHTML = `
+      <table class="quiz-table" style="margin:0">
+        <thead>
+          <tr>
+            <th>Email</th>
+            <th>Role</th>
+            <th>Created</th>
+            <th style="text-align:right">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${users.map(u => `
+          <tr id="user-row-${escHtml(u.id)}">
+            <td class="td-title" style="font-size:13px">${escHtml(u.email || '—')}</td>
+            <td>
+              <select class="api-url-input" style="padding:3px 8px;font-size:12px;width:auto"
+                onchange="updateUserRole('${escHtml(u.id)}', this.value, '${escHtml(schoolId)}')"
+                ${u.role === 'superadmin' ? 'disabled' : ''}>
+                <option value="teacher" ${u.role === 'teacher' ? 'selected' : ''}>Teacher</option>
+                <option value="admin"   ${u.role === 'admin'   ? 'selected' : ''}>Admin</option>
+              </select>
+            </td>
+            <td class="td-meta">${fmtDate(u.created_at)}</td>
+            <td style="text-align:right">
+              <button class="btn btn-sm btn-ghost" style="color:var(--red)"
+                onclick="openDeleteUserModal('${escHtml(u.id)}','${escHtml(u.email || u.id)}','${escHtml(schoolId)}')">
+                ✕ Delete
+              </button>
+            </td>
+          </tr>`).join('')}
+        </tbody>
+      </table>`;
+  } catch (err) {
+    body.innerHTML = `<span style="color:var(--red);font-size:13px">${err.message}</span>`;
+  }
+}
+
+async function updateUserRole(userId, newRole, schoolId) {
+  try {
+    const res  = await fetch(apiBase() + '/api/users/' + userId + '/role', {
+      method:  'PATCH',
+      headers: authHeaders(),
+      body:    JSON.stringify({ role: newRole }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Role update failed.');
+    toast('Role updated to ' + newRole + '.', 'ok');
+  } catch (err) {
+    toast(err.message, 'err');
+  }
+}
+
+let _deleteUserId     = null;
+let _deleteUserEmail  = null;
+let _deleteUserSchool = null;
+
+function openDeleteUserModal(userId, email, schoolId) {
+  _deleteUserId     = userId;
+  _deleteUserEmail  = email;
+  _deleteUserSchool = schoolId;
+  document.getElementById('del-user-email').textContent  = email;
+  document.getElementById('del-user-secret').value       = '';
+  document.getElementById('del-user-err').textContent    = '';
+  document.getElementById('modal-delete-user').style.display = 'flex';
+}
+
+function closeDeleteUserModal() {
+  document.getElementById('modal-delete-user').style.display = 'none';
+  _deleteUserId = _deleteUserEmail = _deleteUserSchool = null;
+}
+
+async function confirmDeleteUser() {
+  const secret = document.getElementById('del-user-secret').value.trim();
+  const errEl  = document.getElementById('del-user-err');
+  const btn    = document.getElementById('del-user-btn');
+  if (!secret) { errEl.textContent = 'Please enter the setup secret.'; return; }
+
+  btn.disabled = true;
+  btn.textContent = 'Deleting…';
+  errEl.textContent = '';
+  try {
+    const res  = await fetch(apiBase() + '/api/users/' + _deleteUserId, {
+      method:  'DELETE',
+      headers: authHeaders(),
+      body:    JSON.stringify({ secret }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Delete failed.');
+    // Remove the user row from the table
+    const row = document.getElementById('user-row-' + _deleteUserId);
+    if (row) row.remove();
+    closeDeleteUserModal();
+    toast(`User deleted.`, 'ok');
+    // Reload school panel to update user counts
+    loadSchoolsPanel();
+  } catch (err) {
+    errEl.textContent = err.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Delete';
+  }
+}
+
+let _deleteSchoolId   = null;
+let _deleteSchoolName = null;
+
+function openDeleteSchoolModal(id, name) {
+  _deleteSchoolId   = id;
+  _deleteSchoolName = name;
+  document.getElementById('del-school-name').textContent = name;
+  document.getElementById('del-school-secret').value     = '';
+  document.getElementById('del-school-err').textContent  = '';
+  document.getElementById('modal-delete-school').style.display = 'flex';
+}
+
+function closeDeleteSchoolModal() {
+  document.getElementById('modal-delete-school').style.display = 'none';
+  _deleteSchoolId = _deleteSchoolName = null;
+}
+
+async function confirmDeleteSchool() {
+  const secret = document.getElementById('del-school-secret').value.trim();
+  const errEl  = document.getElementById('del-school-err');
+  const btn    = document.getElementById('del-school-btn');
+  if (!secret) { errEl.textContent = 'Please enter the setup secret.'; return; }
+
+  btn.disabled = true;
+  btn.textContent = 'Deleting…';
+  errEl.textContent = '';
+  try {
+    const res  = await fetch(apiBase() + '/api/schools/' + _deleteSchoolId, {
+      method:  'DELETE',
+      headers: authHeaders(),
+      body:    JSON.stringify({ secret }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Delete failed.');
+    closeDeleteSchoolModal();
+    toast(`"${_deleteSchoolName || 'School'}" deleted.`, 'ok');
+    loadSchoolsPanel();
+    loadSchoolSelector();  // refresh sidebar dropdown
+  } catch (err) {
+    errEl.textContent = err.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Delete';
+  }
 }
 
 // ─── Upload zone ──────────────────────────────────────────────────────────────
@@ -2092,7 +2370,7 @@ async function loadBank() {
   try {
     const [qRes, tRes] = await Promise.all([
       fetch(apiBase() + '/api/questions' + (topicFilter ? schoolParam() + (schoolParam() ? '&' : '?') + `topic=${encodeURIComponent(topicFilter)}` : schoolParam()), { headers: authHeaders() }),
-      fetch(apiBase() + '/api/topics', { headers: authHeaders() }),
+      fetch(apiBase() + '/api/topics' + schoolParam(), { headers: authHeaders() }),
     ]);
 
     if (qRes.status === 401 || tRes.status === 401) { clearSession(); showLogin(); return; }

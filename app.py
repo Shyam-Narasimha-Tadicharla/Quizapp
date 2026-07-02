@@ -69,9 +69,10 @@ _engine = create_engine(
 # Project Settings → API). We verify the signature locally — no round-trip
 # to Supabase on every request.
 
-SUPABASE_URL      = os.environ.get("SUPABASE_URL", "")
-SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY", "")
-SETUP_SECRET      = os.environ.get("SETUP_SECRET", "")
+SUPABASE_URL              = os.environ.get("SUPABASE_URL", "")
+SUPABASE_ANON_KEY         = os.environ.get("SUPABASE_ANON_KEY", "")
+SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
+SETUP_SECRET              = os.environ.get("SETUP_SECRET", "")
 
 # JWKS cache — fetched once per process, refreshed on key-not-found errors.
 _jwks_client: pyjwt.PyJWKClient | None = None
@@ -903,8 +904,149 @@ def get_schools():
                 "user_count": user_counts.get(s.id, 0),
                 "quiz_count": quiz_counts.get(s.id, 0),
             }
-            for s in schools
+            for s in schools if s.name != "__platform__"
         ]})
+
+
+@app.route("/api/schools/<school_id>", methods=["DELETE"])
+@require_auth
+def delete_school(school_id: str):
+    """Delete a school — superadmin only, requires SETUP_SECRET, school must be empty."""
+    if g.user.role != "superadmin":
+        return jsonify({"error": "Forbidden."}), 403
+
+    body   = request.get_json(silent=True) or {}
+    secret = body.get("secret", "")
+    if not SETUP_SECRET or secret != SETUP_SECRET:
+        return jsonify({"error": "Invalid secret."}), 403
+
+    with Session(_engine) as session:
+        school = session.get(School, school_id)
+        if school is None:
+            return jsonify({"error": "School not found."}), 404
+        if school.name == "__platform__":
+            return jsonify({"error": "Cannot delete platform sentinel."}), 403
+
+        user_count = session.execute(
+            select(func.count(User.id)).where(User.school_id == school_id)
+        ).scalar_one()
+        quiz_count = session.execute(
+            select(func.count(Quiz.id)).where(Quiz.school_id == school_id)
+        ).scalar_one()
+        assign_count = session.execute(
+            select(func.count(Assignment.id)).where(Assignment.school_id == school_id)
+        ).scalar_one()
+
+        if user_count or quiz_count or assign_count:
+            return jsonify({
+                "error": (
+                    f"Cannot delete: school has "
+                    f"{user_count} user(s), {quiz_count} quiz(zes), "
+                    f"{assign_count} assignment(s)."
+                )
+            }), 409
+
+        session.delete(school)
+        session.commit()
+
+    # clear from domain cache if present
+    _domain_cache.pop(school.domain, None)
+    log.info("School deleted: %s (%s)", school.name, school_id)
+    return jsonify({"message": f"School '{school.name}' deleted."}), 200
+
+
+@app.route("/api/schools/<school_id>/users", methods=["GET"])
+@require_auth
+def get_school_users(school_id: str):
+    """List all users in a school — superadmin only."""
+    if g.user.role != "superadmin":
+        return jsonify({"error": "Forbidden."}), 403
+
+    with Session(_engine) as session:
+        users = session.execute(
+            select(User).where(User.school_id == school_id).order_by(User.created_at)
+        ).scalars().all()
+        return jsonify({"users": [
+            {
+                "id":         u.id,
+                "auth_id":    u.auth_id,
+                "email":      u.email,
+                "role":       u.role,
+                "created_at": u.created_at.isoformat(),
+            }
+            for u in users
+        ]})
+
+
+@app.route("/api/users/<user_id>", methods=["DELETE"])
+@require_auth
+def delete_user(user_id: str):
+    """Delete a user — superadmin only, requires SETUP_SECRET."""
+    if g.user.role != "superadmin":
+        return jsonify({"error": "Forbidden."}), 403
+
+    body   = request.get_json(silent=True) or {}
+    secret = body.get("secret", "")
+    if not SETUP_SECRET or secret != SETUP_SECRET:
+        return jsonify({"error": "Invalid secret."}), 403
+
+    import urllib.request, urllib.error
+
+    with Session(_engine) as session:
+        user = session.get(User, user_id)
+        if user is None:
+            return jsonify({"error": "User not found."}), 404
+        if user.role == "superadmin":
+            return jsonify({"error": "Cannot delete a superadmin account."}), 403
+
+        auth_id = user.auth_id
+        session.delete(user)
+        session.commit()
+
+    # Delete from Supabase Auth using service role key
+    delete_url = f"{SUPABASE_URL}/auth/v1/admin/users/{auth_id}"
+    req = urllib.request.Request(
+        delete_url,
+        method  = "DELETE",
+        headers = {
+            "apikey":        SUPABASE_SERVICE_ROLE_KEY,
+            "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req) as resp:
+            pass
+    except urllib.error.HTTPError as exc:
+        # DB row already deleted — log the Supabase error but don't fail
+        log.warning("Supabase auth delete failed for %s: %s", auth_id, exc.read())
+
+    log.info("User deleted: %s (%s)", user.email, user_id)
+    return jsonify({"message": f"User '{user.email}' deleted."}), 200
+
+
+@app.route("/api/users/<user_id>/role", methods=["PATCH"])
+@require_auth
+def update_user_role(user_id: str):
+    """Change a user's role — superadmin only."""
+    if g.user.role != "superadmin":
+        return jsonify({"error": "Forbidden."}), 403
+
+    body = request.get_json(silent=True) or {}
+    new_role = (body.get("role") or "").strip()
+    if new_role not in ("admin", "teacher"):
+        return jsonify({"error": "Role must be 'admin' or 'teacher'."}), 400
+
+    with Session(_engine) as session:
+        user = session.get(User, user_id)
+        if user is None:
+            return jsonify({"error": "User not found."}), 404
+        if user.role == "superadmin":
+            return jsonify({"error": "Cannot change a superadmin's role."}), 403
+        user.role = new_role
+        session.commit()
+
+    log.info("User role updated: %s → %s (%s)", user.email, new_role, user_id)
+    return jsonify({"message": f"Role updated to '{new_role}'.", "role": new_role}), 200
 
 
 @app.route("/api/quizzes", methods=["GET"])
@@ -1138,12 +1280,14 @@ def get_topics():
     with Session(_engine) as session:
         allowed = _allowed_topics_for_user(session, g.user)
 
+        scope = g.effective_school_id if g.user.role == "superadmin" else g.school_id
         stmt = (
             select(Question.topic)
-            .where(Question.school_id == g.school_id)
             .where(Question.topic.isnot(None))
             .where(Question.deleted_at.is_(None))
         )
+        if scope is not None:
+            stmt = stmt.where(Question.school_id == scope)
         if allowed is not None:
             stmt = stmt.where(Question.topic.in_(allowed))
         stmt = stmt.distinct().order_by(Question.topic)
