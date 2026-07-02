@@ -909,6 +909,14 @@
       </div>
     </div>
 
+    <!-- Superadmin school selector (hidden for normal users) -->
+    <div id="school-selector-wrap" style="display:none;padding:0 1rem .75rem;">
+      <div style="font-size:11px;color:var(--ink-dim);margin-bottom:4px;text-transform:uppercase;letter-spacing:.04em">Viewing school</div>
+      <select id="school-selector" class="api-url-input" style="width:100%;padding:7px 10px;font-size:13px" onchange="onSchoolSelect()">
+        <option value="">All Schools</option>
+      </select>
+    </div>
+
     <div class="nav-item" onclick="showPanel('upload')" id="nav-upload">
       <span class="nav-icon">⬆</span> Upload
     </div>
@@ -1395,14 +1403,27 @@ function showApp() {
   if (_session && _session.user) {
     const u    = _session.user;
     const role = u.role || 'teacher';
+    const schoolName = u.school_name || '';
     document.getElementById('user-chip').style.display        = 'flex';
     document.getElementById('user-avatar').textContent        = u.email[0].toUpperCase();
     document.getElementById('user-email-display').textContent = u.email;
     document.getElementById('user-role-display').textContent  = role;
-    document.getElementById('logo-role').textContent          = role.charAt(0).toUpperCase() + role.slice(1);
-    // Role-gated nav items — set explicitly every time so refresh is correct
+    // Sidebar: show "School Name · Role" (or just role for superadmin)
+    document.getElementById('logo-role').textContent = schoolName
+      ? schoolName + ' · ' + role.charAt(0).toUpperCase() + role.slice(1)
+      : role.charAt(0).toUpperCase() + role.slice(1);
+    // Role-gated nav items
     document.getElementById('nav-upload').style.display = (role === 'admin') ? '' : 'none';
-    document.getElementById('nav-team').style.display   = (role === 'admin') ? '' : 'none';
+    document.getElementById('nav-team').style.display   = (role === 'admin' || role === 'superadmin') ? '' : 'none';
+    // Superadmin: show school selector, hide upload
+    const schoolSelectorEl = document.getElementById('school-selector-wrap');
+    if (role === 'superadmin') {
+      document.getElementById('nav-upload').style.display = 'none';
+      schoolSelectorEl.style.display = '';
+      loadSchoolSelector();
+    } else {
+      schoolSelectorEl.style.display = 'none';
+    }
   }
   loadLibrary();
 }
@@ -1442,6 +1463,18 @@ const PANELS = {
   team:         { title: 'Team',         sub: 'Manage subjects, teachers and access' },
 };
 
+function _panelSub(name) {
+  const base = PANELS[name].sub;
+  if (!_session) return base;
+  const role = _session.user.role;
+  if (role === 'superadmin') {
+    const sel = document.getElementById('school-selector');
+    const label = sel && sel.selectedOptions[0] ? sel.selectedOptions[0].text : '';
+    return label && label !== 'All Schools' ? label : 'All Schools';
+  }
+  return (_session.user.school_name || base);
+}
+
 function showPanel(name) {
   document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
@@ -1450,7 +1483,7 @@ function showPanel(name) {
   const navEl = document.getElementById('nav-' + navId);
   if (navEl) navEl.classList.add('active');
   document.getElementById('topbar-title').textContent = PANELS[name].title;
-  document.getElementById('topbar-sub').textContent   = PANELS[name].sub;
+  document.getElementById('topbar-sub').textContent   = _panelSub(name);
   document.getElementById('topbar-actions').innerHTML = '';
   if (name === 'library')     { loadLibrary(); }
   if (name === 'bank')        { loadBank(); }
@@ -1458,6 +1491,43 @@ function showPanel(name) {
   if (name === 'results')     { loadResultsPanel(); }
   if (name === 'classreport') { loadClassReportList(); }
   if (name === 'team')        { loadTeam(); }
+}
+
+// ─── Superadmin school selector ───────────────────────────────────────────────
+let _schools = [];  // cached list from /api/schools
+
+async function loadSchoolSelector() {
+  try {
+    const res  = await fetch(apiBase() + '/api/schools', { headers: authHeaders() });
+    const data = await res.json();
+    if (!res.ok) return;
+    _schools = data.schools || [];
+    const sel = document.getElementById('school-selector');
+    sel.innerHTML = '<option value="">All Schools</option>' +
+      _schools.map(s => `<option value="${escHtml(s.id)}">${escHtml(s.name)}${s.domain ? ' (' + escHtml(s.domain) + ')' : ''}</option>`).join('');
+  } catch {}
+}
+
+function isSuperAdmin() {
+  return _session && _session.user && _session.user.role === 'superadmin';
+}
+
+// Returns ?school_id=... param string for API calls when superadmin has a school selected
+function schoolParam() {
+  if (!isSuperAdmin()) return '';
+  const sel = document.getElementById('school-selector');
+  const id  = sel ? sel.value : '';
+  return id ? '?school_id=' + encodeURIComponent(id) : '';
+}
+
+function onSchoolSelect() {
+  // Refresh current active panel with new school scope
+  const active = document.querySelector('.panel.active');
+  if (!active) return;
+  const name = active.id.replace('panel-', '');
+  // Update topbar subtitle
+  document.getElementById('topbar-sub').textContent = _panelSub(name);
+  showPanel(name);
 }
 
 // ─── Upload zone ──────────────────────────────────────────────────────────────
@@ -1592,7 +1662,7 @@ async function loadLibrary() {
   body.innerHTML = `<div class="card-body" style="text-align:center;padding:2rem;color:var(--ink-dim)"><span class="spinner" style="border-color:rgba(255,255,255,.1);border-top-color:var(--accent)"></span></div>`;
 
   try {
-    const res  = await fetch(apiBase() + '/api/quizzes', {
+    const res  = await fetch(apiBase() + '/api/quizzes' + schoolParam(), {
       headers: authHeaders(),
     });
     const data = await res.json();
@@ -1618,11 +1688,13 @@ async function loadLibrary() {
     window._quizMeta = {};
     quizzes.forEach(q => { window._quizMeta[q.id] = q.title; });
 
+    const showSchool = isSuperAdmin() && !schoolParam();
     body.innerHTML = `
       <table class="quiz-table">
         <thead>
           <tr>
             <th>Title</th>
+            ${showSchool ? '<th>School</th>' : ''}
             <th>Questions</th>
             <th>Created</th>
             <th style="text-align:right">Actions</th>
@@ -1632,6 +1704,7 @@ async function loadLibrary() {
           ${quizzes.map(q => `
             <tr>
               <td class="td-title">${escHtml(q.title)}</td>
+              ${showSchool ? `<td class="td-meta">${escHtml(q.school_name || '')}</td>` : ''}
               <td><span class="td-badge">${q.question_count}</span></td>
               <td class="td-meta">${fmtDate(q.created_at)}</td>
               <td>
@@ -1856,7 +1929,9 @@ function toast(msg, type = '') {
 
 // ─── Role helpers ─────────────────────────────────────────────────────────────
 function isAdmin() {
-  return _session && _session.user && _session.user.role === 'admin';
+  return _session && _session.user && (
+    _session.user.role === 'admin' || _session.user.role === 'superadmin'
+  );
 }
 
 // ─── Generic modal ────────────────────────────────────────────────────────────
@@ -2016,7 +2091,7 @@ async function loadBank() {
 
   try {
     const [qRes, tRes] = await Promise.all([
-      fetch(apiBase() + '/api/questions' + (topicFilter ? `?topic=${encodeURIComponent(topicFilter)}` : ''), { headers: authHeaders() }),
+      fetch(apiBase() + '/api/questions' + (topicFilter ? schoolParam() + (schoolParam() ? '&' : '?') + `topic=${encodeURIComponent(topicFilter)}` : schoolParam()), { headers: authHeaders() }),
       fetch(apiBase() + '/api/topics', { headers: authHeaders() }),
     ]);
 
@@ -2181,7 +2256,7 @@ async function loadAssignments() {
   body.innerHTML = '<div class="card-body" style="text-align:center;color:var(--ink-dim);font-size:13px">Loading…</div>';
 
   try {
-    const res  = await fetch(apiBase() + '/api/assignments', { headers: authHeaders() });
+    const res  = await fetch(apiBase() + '/api/assignments' + schoolParam(), { headers: authHeaders() });
     if (res.status === 401) { clearSession(); showLogin(); return; }
     const data = await res.json();
     _assignments = data.assignments || [];
@@ -2208,6 +2283,7 @@ async function loadAssignments() {
         ? `<span style="font-size:10px;padding:1px 7px;border-radius:99px;background:rgba(99,102,241,.15);color:#a5b4fc;font-weight:600;margin-left:4px">⏱ ${a.duration_minutes}m</span>`
         : '';
 
+    const showSchoolCol = isSuperAdmin() && !schoolParam();
     const nowMs = Date.now();
     body.innerHTML = _assignments.map(a => {
       const isClosed = a.closes_at ? new Date(a.closes_at).getTime() <= nowMs : false;
@@ -2223,6 +2299,7 @@ async function loadAssignments() {
           </div>
           <div class="assign-meta">
             <span class="assign-class">${escHtml(a.class_name)}</span>
+            ${showSchoolCol ? ` · <span style="color:var(--accent-hi)">${escHtml(a.school_name || '')}</span>` : ''}
             ${a.closes_at ? ` · closes ${fmtDate(a.closes_at)}` : ' · no expiry'}
           </div>
         </div>
@@ -2689,8 +2766,8 @@ async function loadTeam() {
 
   try {
     const [sRes, tRes] = await Promise.all([
-      fetch(apiBase() + '/api/subjects',  { headers: authHeaders() }),
-      fetch(apiBase() + '/api/teachers',  { headers: authHeaders() }),
+      fetch(apiBase() + '/api/subjects'  + schoolParam(), { headers: authHeaders() }),
+      fetch(apiBase() + '/api/teachers'  + schoolParam(), { headers: authHeaders() }),
     ]);
     if (sRes.status === 401 || tRes.status === 401) { clearSession(); showLogin(); return; }
 

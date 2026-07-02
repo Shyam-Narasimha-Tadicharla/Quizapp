@@ -133,9 +133,15 @@ def require_auth(f):
         if user is None:
             return jsonify({"error": "Account not found. Contact your administrator."}), 403
 
-        g.user      = user
-        g.school_id = user.school_id
-        g.user_id   = user.id
+        g.user        = user
+        g.school_id   = None if user.role == "superadmin" else user.school_id
+        g.user_id     = user.id
+        # For superadmin: respect ?school_id= query param to scope to one school,
+        # or None to mean all schools. For normal users always their own school.
+        if user.role == "superadmin":
+            g.effective_school_id = request.args.get("school_id") or None
+        else:
+            g.effective_school_id = user.school_id
         return f(*args, **kwargs)
     return wrapper
 
@@ -335,11 +341,17 @@ def load_quiz(quiz_id: str) -> dict | None:
         }
 
 
-def list_quizzes(school_id: str) -> list[dict]:
+def list_quizzes(school_id: str | None) -> list[dict]:
     """
-    Return metadata for all quizzes belonging to a school, newest first.
+    Return metadata for quizzes. If school_id is None (superadmin), returns all schools.
     """
     with Session(_engine) as session:
+        # build school-name lookup when returning all
+        school_names: dict = {}
+        if school_id is None:
+            for s in session.execute(select(School)).scalars().all():
+                school_names[s.id] = s.name
+
         count_subq = (
             select(
                 QuizQuestion.quiz_id,
@@ -351,9 +363,10 @@ def list_quizzes(school_id: str) -> list[dict]:
         stmt = (
             select(Quiz, count_subq.c.question_count)
             .outerjoin(count_subq, count_subq.c.quiz_id == Quiz.id)
-            .where(Quiz.school_id == school_id)
             .order_by(Quiz.created_at.desc())
         )
+        if school_id is not None:
+            stmt = stmt.where(Quiz.school_id == school_id)
         rows = session.execute(stmt).all()
 
         return [
@@ -363,6 +376,7 @@ def list_quizzes(school_id: str) -> list[dict]:
                 "source_filename": quiz.source_filename,
                 "created_at":      quiz.created_at.isoformat(),
                 "question_count":  count or 0,
+                **({"school_name": school_names.get(quiz.school_id, "")} if school_id is None else {}),
             }
             for quiz, count in rows
         ]
@@ -642,6 +656,71 @@ def setup_provision():
     return jsonify({"message": f"School '{school_name}' created with admin {email}."}), 201
 
 
+@app.route("/setup-superadmin", methods=["POST"])
+def setup_superadmin():
+    """
+    One-time route to create the platform-level superadmin account.
+    Requires SETUP_SECRET. The superadmin user belongs to a special
+    platform school row — not a real school, just a sentinel for FK.
+    """
+    body   = request.get_json(silent=True) or {}
+    secret = body.get("secret", "")
+    if not SETUP_SECRET or secret != SETUP_SECRET:
+        return jsonify({"error": "Forbidden."}), 403
+
+    email    = (body.get("email") or "").strip().lower()
+    password = body.get("password") or ""
+    if not email or not password:
+        return jsonify({"error": "email and password are required."}), 400
+
+    import urllib.request, urllib.error, json as _json
+
+    # 1. Create Supabase auth user
+    signup_url = f"{SUPABASE_URL}/auth/v1/signup"
+    req_data = _json.dumps({"email": email, "password": password}).encode()
+    req = urllib.request.Request(signup_url, data=req_data, method="POST",
+          headers={"Content-Type": "application/json", "apikey": SUPABASE_ANON_KEY})
+    try:
+        with urllib.request.urlopen(req) as resp:
+            auth_data = _json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        err = _json.loads(exc.read())
+        return jsonify({"error": err.get("msg") or "Signup failed."}), 400
+
+    auth_id = (auth_data.get("user") or {}).get("id")
+    if not auth_id:
+        return jsonify({"error": "Supabase signup did not return a user id."}), 500
+
+    now = datetime.now(timezone.utc)
+
+    with Session(_engine) as session:
+        # Check if superadmin already exists
+        existing = session.execute(
+            select(User).where(User.role == "superadmin")
+        ).scalar_one_or_none()
+        if existing:
+            return jsonify({"error": "A superadmin already exists."}), 409
+
+        # Use a sentinel school (create if absent)
+        sentinel_id = "00000000-0000-0000-0000-000000000000"
+        sentinel = session.get(School, sentinel_id)
+        if sentinel is None:
+            session.add(School(id=sentinel_id, name="__platform__", created_at=now))
+
+        session.add(User(
+            id        = str(uuid.uuid4()),
+            auth_id   = auth_id,
+            email     = email,
+            school_id = sentinel_id,
+            role      = "superadmin",
+            created_at= now,
+        ))
+        session.commit()
+
+    log.info("Superadmin created: %s", email)
+    return jsonify({"message": f"Superadmin {email} created."}), 201
+
+
 @app.route("/api/auth/login", methods=["POST"])
 def login():
     """
@@ -690,16 +769,21 @@ def login():
             select(User).where(User.auth_id == auth_id)
         ).scalar_one_or_none()
 
-    if user is None:
-        return jsonify({"error": "Account not found. Contact your administrator."}), 403
+        if user is None:
+            return jsonify({"error": "Account not found. Contact your administrator."}), 403
+
+        school = session.get(School, user.school_id)
+        raw_name = school.name if school else ""
+        school_name = "" if raw_name == "__platform__" else raw_name
 
     return jsonify({
         "access_token": access_token,
         "user": {
-            "id":        user.id,
-            "email":     email,
-            "school_id": user.school_id,
-            "role":      user.role,
+            "id":          user.id,
+            "email":       email,
+            "school_id":   user.school_id,
+            "school_name": school_name,
+            "role":        user.role,
         },
     })
 
@@ -788,6 +872,41 @@ def create_quiz():
     }), 201
 
 
+@app.route("/api/schools", methods=["GET"])
+@require_auth
+def get_schools():
+    """List all schools — superadmin only."""
+    if g.user.role != "superadmin":
+        return jsonify({"error": "Forbidden."}), 403
+
+    with Session(_engine) as session:
+        # user counts per school
+        user_counts = dict(session.execute(
+            select(User.school_id, func.count(User.id).label("n"))
+            .group_by(User.school_id)
+        ).all())
+        # quiz counts per school
+        quiz_counts = dict(session.execute(
+            select(Quiz.school_id, func.count(Quiz.id).label("n"))
+            .group_by(Quiz.school_id)
+        ).all())
+        schools = session.execute(
+            select(School).order_by(School.name)
+        ).scalars().all()
+
+        return jsonify({"schools": [
+            {
+                "id":         s.id,
+                "name":       s.name,
+                "domain":     s.domain,
+                "created_at": s.created_at.isoformat(),
+                "user_count": user_counts.get(s.id, 0),
+                "quiz_count": quiz_counts.get(s.id, 0),
+            }
+            for s in schools
+        ]})
+
+
 @app.route("/api/quizzes", methods=["GET"])
 @require_auth
 def get_quizzes():
@@ -796,6 +915,10 @@ def get_quizzes():
     Teachers with subject assignments only see quizzes that contain
     at least one question whose topic is in their allowed set.
     """
+    # superadmin: use effective_school_id (None = all, or a specific school)
+    if g.user.role == "superadmin":
+        return jsonify({"quizzes": list_quizzes(g.effective_school_id)})
+
     with Session(_engine) as session:
         allowed = _allowed_topics_for_user(session, g.user)
 
@@ -979,7 +1102,11 @@ def get_questions():
     with Session(_engine) as session:
         allowed = _allowed_topics_for_user(session, g.user)
 
-        stmt = select(Question).where(Question.school_id == g.school_id).where(Question.deleted_at.is_(None))
+        stmt = select(Question).where(Question.deleted_at.is_(None))
+        if g.effective_school_id is not None:
+            stmt = stmt.where(Question.school_id == g.effective_school_id)
+        elif g.school_id is not None:  # normal user
+            stmt = stmt.where(Question.school_id == g.school_id)
         if allowed is not None:
             stmt = stmt.where(Question.topic.in_(allowed))
         if topic_filter:
@@ -1281,9 +1408,11 @@ def delete_quiz(quiz_id: str):
 def list_subjects():
     """List all subjects for this school, including their topics and assigned teachers."""
     with Session(_engine) as session:
-        subjects = session.execute(
-            select(Subject).where(Subject.school_id == g.school_id).order_by(Subject.name)
-        ).scalars().all()
+        scope = g.effective_school_id if g.user.role == "superadmin" else g.school_id
+        stmt = select(Subject).order_by(Subject.name)
+        if scope is not None:
+            stmt = stmt.where(Subject.school_id == scope)
+        subjects = session.execute(stmt).scalars().all()
 
         result = []
         for subj in subjects:
@@ -1454,15 +1583,15 @@ def set_subject_teachers(subject_id: str):
 @require_auth
 def list_teachers():
     """List all teachers (and admins) in this school. Admin only."""
-    if g.user.role != "admin":
+    if g.user.role not in ("admin", "superadmin"):
         return jsonify({"error": "Admin access required."}), 403
 
     with Session(_engine) as session:
-        users = session.execute(
-            select(User)
-            .where(User.school_id == g.school_id)
-            .order_by(User.created_at)
-        ).scalars().all()
+        stmt = select(User).order_by(User.created_at)
+        scope = g.effective_school_id if g.user.role == "superadmin" else g.school_id
+        if scope is not None:
+            stmt = stmt.where(User.school_id == scope)
+        users = session.execute(stmt).scalars().all()
 
         result = []
         for u in users:
@@ -1571,12 +1700,16 @@ def delete_teacher(user_id: str):
 def list_assignments():
     """List all assignments for this school, newest first."""
     with Session(_engine) as session:
-        rows = session.execute(
-            select(Assignment, Quiz.title)
-            .outerjoin(Quiz, Quiz.id == Assignment.quiz_id)
-            .where(Assignment.school_id == g.school_id)
+        stmt = (
+            select(Assignment, Quiz.title, School.name.label("school_name"))
+            .outerjoin(Quiz,   Quiz.id   == Assignment.quiz_id)
+            .outerjoin(School, School.id == Assignment.school_id)
             .order_by(Assignment.created_at.desc())
-        ).all()
+        )
+        scope = g.effective_school_id if g.user.role == "superadmin" else g.school_id
+        if scope is not None:
+            stmt = stmt.where(Assignment.school_id == scope)
+        rows = session.execute(stmt).all()
 
     return jsonify({"assignments": [
         {
@@ -1584,6 +1717,7 @@ def list_assignments():
             "class_name":           a.class_name,
             "quiz_id":              a.quiz_id,
             "quiz_title":           title,
+            "school_name":          school_name,
             "mode":                 a.mode,
             "randomize_questions":  a.randomize_questions,
             "randomize_options":    a.randomize_options,
@@ -1592,7 +1726,7 @@ def list_assignments():
             "closes_at":            a.closes_at.isoformat() if a.closes_at else None,
             "created_at":           a.created_at.isoformat(),
         }
-        for a, title in rows
+        for a, title, school_name in rows
     ]})
 
 
